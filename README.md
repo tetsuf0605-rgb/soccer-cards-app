@@ -9,6 +9,11 @@ GitHub Contents API で読み書きする。仕様の正はそちらの `docs/` 
 ビルドなしの静的構成。HTML + CSS + JavaScript（ES modules）のみで、
 フレームワーク・npm依存・ビルドステップは使わない（push＝デプロイを維持するため）。
 
+## 実機（iPhone）での確認
+
+GitHub Pagesの公開からホーム画面追加、本番PATでの読み書きまでの手順は
+[docs/iPhone実機確認手順.md](docs/iPhone実機確認手順.md) にまとめてある。
+
 ## ローカルでの動作確認
 
 ES modules と Service Worker は `file://` では動かないので、必ずHTTPで配信する。
