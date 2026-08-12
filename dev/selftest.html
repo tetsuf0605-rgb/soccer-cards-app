@@ -1,0 +1,280 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>セルフテスト — サッカートレカ所持リスト</title>
+<link rel="stylesheet" href="../css/style.css">
+<style>
+  .t { padding: 8px 12px; margin-bottom: 6px; border-radius: 8px; font-size: 14px;
+       background: var(--surface); border: 1px solid var(--border); }
+  .t--pass { border-left: 4px solid var(--accent); }
+  .t--fail { border-left: 4px solid var(--danger); }
+  .t__why { display: block; margin-top: 4px; color: var(--danger); font-size: 13px;
+            font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+  #summary { font-size: 18px; font-weight: 700; margin: 0 0 14px; }
+</style>
+</head>
+<body>
+
+<header class="appbar">
+  <h1 class="appbar__title">セルフテスト</h1>
+</header>
+
+<main class="main">
+  <p class="hint">
+    PATを使わずに検証できる範囲を確認する開発用ページ。Contents APIのレスポンスを
+    <code>dev/fixtures.js</code>（Pythonで別途base64化した実ファイル）で差し替えて動かす。
+    GitHubへの実通信は行わない。
+  </p>
+
+  <p id="summary">実行中…</p>
+  <div id="results"></div>
+
+  <h2 class="section-title">一覧の描画（実データ）</h2>
+  <p id="render-message" class="message"></p>
+  <ul id="render-target" class="cards"></ul>
+</main>
+
+<script type="module">
+import { FIXTURES } from './fixtures.js';
+import { encodeBase64Utf8, decodeBase64Utf8 } from '../js/base64.js';
+import { fetchAllFiles, getJsonFile, DATA_FILES, WRITABLE_PATH } from '../js/github.js';
+import { buildCardList, formatPrice, formatStorage } from '../js/render.js';
+
+const results = document.getElementById('results');
+let passed = 0;
+let failed = 0;
+
+function record(name, error) {
+  const row = document.createElement('div');
+  row.className = `t t--${error ? 'fail' : 'pass'}`;
+  row.textContent = `${error ? '✗' : '✓'} ${name}`;
+  if (error) {
+    const why = document.createElement('span');
+    why.className = 't__why';
+    why.textContent = error.message;
+    row.append(why);
+  }
+  results.append(row);
+  if (error) failed += 1; else passed += 1;
+}
+
+async function test(name, fn) {
+  try {
+    await fn();
+    record(name, null);
+  } catch (error) {
+    record(name, error);
+  }
+}
+
+function assert(cond, message) {
+  if (!cond) throw new Error(message);
+}
+
+function assertEqual(actual, expected, label) {
+  if (actual !== expected) {
+    throw new Error(`${label}: 期待 ${JSON.stringify(expected)} / 実際 ${JSON.stringify(actual)}`);
+  }
+}
+
+const SETTINGS = { owner: 'tetsuf0605-rgb', repo: 'soccer-cards-data', token: 'dummy-token' };
+
+/** window.fetch を差し替える。戻り値を呼ぶと元に戻る。 */
+function stubFetch(handler) {
+  const original = window.fetch;
+  window.fetch = async (url, init) => handler(String(url), init ?? {});
+  return () => { window.fetch = original; };
+}
+
+/** Contents API の成功レスポンス。 */
+function okResponse(path) {
+  const f = FIXTURES[path];
+  return {
+    ok: true,
+    status: 200,
+    json: async () => ({ name: path, path, sha: f.sha, size: f.size, content: f.content, encoding: 'base64' }),
+  };
+}
+
+function errorResponse(status) {
+  return { ok: false, status, json: async () => ({}) };
+}
+
+/** 全ファイル成功を返すハンドラ。 */
+function allOk(url) {
+  const path = url.split('/contents/')[1];
+  return FIXTURES[path] ? okResponse(path) : errorResponse(404);
+}
+
+/* ========== base64（日本語のUTF-8経路） ========== */
+
+await test('decodeBase64Utf8: 改行入りbase64を復号し日本語が壊れない', () => {
+  const text = decodeBase64Utf8(FIXTURES['collection.json'].content);
+  const json = JSON.parse(text);
+  assertEqual(json.players[0].name, 'ジュード・ベリンガム', 'p-0001の名前');
+  assertEqual(json.players[1].name, '三笘薫', 'p-0002の名前');
+  assert(json.cards[0].notes.startsWith('裏面:'), 'notesの日本語が壊れている');
+});
+
+await test('encodeBase64Utf8: Pythonの符号化結果と1バイトも違わない', () => {
+  const text = decodeBase64Utf8(FIXTURES['collection.json'].content);
+  const reEncoded = encodeBase64Utf8(text);
+  const expected = FIXTURES['collection.json'].content.replace(/\s/g, '');
+  assertEqual(reEncoded, expected, 'base64往復');
+});
+
+await test('encodeBase64Utf8: btoaが落ちる文字でも通る', () => {
+  const tricky = '三笘薫 🇯🇵 Bellingham ½ ＃110';
+  assertEqual(decodeBase64Utf8(encodeBase64Utf8(tricky)), tricky, '往復結果');
+  let btoaThrew = false;
+  try { btoa(tricky); } catch { btoaThrew = true; }
+  assert(btoaThrew, '前提が崩れている: btoaが例外を投げていない');
+});
+
+/* ========== Contents APIクライアント ========== */
+
+await test('getJsonFile: URL・認証ヘッダ・APIバージョンが正しい', async () => {
+  let seenUrl = '';
+  let seenHeaders = null;
+  const restore = stubFetch((url, init) => {
+    seenUrl = url;
+    seenHeaders = init.headers;
+    return okResponse('collection.json');
+  });
+  try {
+    await getJsonFile(SETTINGS, DATA_FILES.collection);
+  } finally { restore(); }
+
+  assertEqual(seenUrl,
+    'https://api.github.com/repos/tetsuf0605-rgb/soccer-cards-data/contents/collection.json', 'URL');
+  assertEqual(seenHeaders.Authorization, 'Bearer dummy-token', 'Authorizationヘッダ');
+  assertEqual(seenHeaders['X-GitHub-Api-Version'], '2022-11-28', 'APIバージョン');
+});
+
+await test('fetchAllFiles: 3ファイルを取得しshaを保持する', async () => {
+  const restore = stubFetch(allOk);
+  let result;
+  try { result = await fetchAllFiles(SETTINGS); } finally { restore(); }
+
+  assertEqual(result.collection.sha, FIXTURES['collection.json'].sha, 'collectionのsha');
+  assertEqual(result.collection.json.cards.length, 2, 'カード枚数');
+  assert(result.prices.ok, 'prices.jsonが取得できていない');
+  assertEqual(result.prices.json.prices['c-20260811-k3f'].current, 13000, 'オーバーレイの価格');
+  assert(result.playersInfo.ok, 'players_info.jsonが取得できていない');
+  assertEqual(result.playersInfo.json.players['p-0001'].infoUpdatedAt, '2026-08-12', 'infoUpdatedAt');
+});
+
+await test('オーバーレイが欠けてもcollectionは読める', async () => {
+  const restore = stubFetch((url) => (
+    url.endsWith('collection.json') ? okResponse('collection.json') : errorResponse(404)
+  ));
+  let result;
+  try { result = await fetchAllFiles(SETTINGS); } finally { restore(); }
+
+  assertEqual(result.collection.json.cards.length, 2, 'カード枚数');
+  assertEqual(result.prices.ok, false, 'pricesは失敗しているはず');
+  assertEqual(result.playersInfo.ok, false, 'players_infoは失敗しているはず');
+  assert(result.prices.error.message.includes('見つかりません'), '404の説明文になっていない');
+});
+
+await test('collection.jsonの取得失敗は致命的（例外になる）', async () => {
+  const restore = stubFetch(() => errorResponse(500));
+  let threw = null;
+  try {
+    await fetchAllFiles(SETTINGS);
+  } catch (error) { threw = error; } finally { restore(); }
+  assert(threw !== null, '例外が投げられていない');
+  assertEqual(threw.name, 'GitHubError', 'エラー種別');
+});
+
+await test('HTTPステータスごとに原因が分かる日本語になる', async () => {
+  const cases = [
+    [401, 'PATが無効'],
+    [403, 'Contents: Read and write'],
+    [404, '見つかりません'],
+  ];
+  for (const [status, needle] of cases) {
+    const restore = stubFetch(() => errorResponse(status));
+    let message = '';
+    try {
+      await getJsonFile(SETTINGS, DATA_FILES.collection);
+    } catch (error) { message = error.message; } finally { restore(); }
+    assert(message.includes(needle), `HTTP ${status} の文言に「${needle}」がない: ${message}`);
+  }
+});
+
+await test('壊れたJSONを掴んだら「壊れています」と言う', async () => {
+  const restore = stubFetch(() => ({
+    ok: true, status: 200,
+    json: async () => ({ sha: 'x', size: 3, content: encodeBase64Utf8('{ nope') }),
+  }));
+  let message = '';
+  try {
+    await getJsonFile(SETTINGS, DATA_FILES.collection);
+  } catch (error) { message = error.message; } finally { restore(); }
+  assert(message.includes('壊れています'), `文言が想定と違う: ${message}`);
+});
+
+await test('ネットワーク断はオフライン向けの文言になる', async () => {
+  const restore = stubFetch(() => { throw new TypeError('Failed to fetch'); });
+  let message = '';
+  try {
+    await getJsonFile(SETTINGS, DATA_FILES.collection);
+  } catch (error) { message = error.message; } finally { restore(); }
+  assert(message.includes('ネットワーク'), `文言が想定と違う: ${message}`);
+});
+
+/* ========== 責務分担（書き込み対象の固定） ========== */
+
+await test('書き込み可能パスは collection.json だけ', () => {
+  assertEqual(WRITABLE_PATH, 'collection.json', 'WRITABLE_PATH');
+  const writers = Object.keys({ ...FIXTURES }).filter((p) => p === WRITABLE_PATH);
+  assertEqual(writers.length, 1, '書き込み対象の数');
+});
+
+/* ========== 表示 ========== */
+
+await test('formatPrice / formatStorage', () => {
+  assertEqual(formatPrice({ current: 12000, checkedAt: '2026-08-10' }),
+    '¥12,000（2026-08-10 時点）', '価格');
+  assertEqual(formatPrice(null), null, '価格なし');
+  assertEqual(formatStorage({ type: 'binder', name: 'BINDER-A' }), 'バインダー（BINDER-A）', 'バインダー');
+  assertEqual(formatStorage({ type: 'toploader', name: null }), 'トップローダー', 'トップローダー');
+});
+
+await test('buildCardList: サンプル2枚 / 選手2人', () => {
+  const json = JSON.parse(decodeBase64Utf8(FIXTURES['collection.json'].content));
+  const { nodes, cardCount, playerCount } = buildCardList(json);
+  assertEqual(cardCount, 2, 'カード枚数');
+  assertEqual(playerCount, 2, '選手数');
+  assertEqual(nodes.length, 2, 'ノード数');
+  assert(nodes[0].textContent.includes('ジュード・ベリンガム'), '1枚目に選手名がない');
+  assert(nodes[1].textContent.includes('BINDER-A'), '2枚目に収納先がない');
+});
+
+await test('選手データが無いカードでも落ちない', () => {
+  const { nodes } = buildCardList({ players: [], cards: [{ id: 'c-x', playerId: 'p-9999', tier: 'gallery' }] });
+  assert(nodes[0].textContent.includes('選手データなし'), 'フォールバック表示が出ていない');
+});
+
+/* ========== 実データを実際に描画して目視確認 ========== */
+
+const json = JSON.parse(decodeBase64Utf8(FIXTURES['collection.json'].content));
+const { nodes, cardCount, playerCount } = buildCardList(json);
+document.getElementById('render-target').replaceChildren(...nodes);
+document.getElementById('render-message').textContent = `${cardCount}枚 / 選手${playerCount}人`;
+
+/* ========== 集計 ========== */
+
+const summary = document.getElementById('summary');
+summary.textContent = failed === 0
+  ? `全 ${passed} 件パス`
+  : `${failed} 件失敗 / ${passed} 件パス`;
+summary.style.color = failed === 0 ? 'var(--accent)' : 'var(--danger)';
+document.title = `${failed === 0 ? 'PASS' : 'FAIL'} — セルフテスト`;
+</script>
+
+</body>
+</html>

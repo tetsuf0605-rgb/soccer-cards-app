@@ -1,0 +1,319 @@
+/* サッカートレカ所持リスト — モバイルファースト（iPhone Safari基準） */
+
+:root {
+  --bg: #0F1720;
+  --surface: #18212C;
+  --surface-2: #1F2A37;
+  --border: #2C3846;
+  --text: #E9EEF3;
+  --text-dim: #9AA9B8;
+  --accent: #22A05A;
+  --accent-text: #FFFFFF;
+  --danger: #E5484D;
+  --warn: #E8A33D;
+
+  --radius: 12px;
+  --gap: 12px;
+  --tap: 44px; /* iOSの推奨タップ領域 */
+}
+
+@media (prefers-color-scheme: light) {
+  :root {
+    --bg: #F4F6F8;
+    --surface: #FFFFFF;
+    --surface-2: #EDF1F5;
+    --border: #D6DEE6;
+    --text: #14202B;
+    --text-dim: #5B6B7B;
+  }
+}
+
+* { box-sizing: border-box; }
+
+html {
+  -webkit-text-size-adjust: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: -apple-system, BlinkMacSystemFont, "Hiragino Sans", "Noto Sans JP", sans-serif;
+  font-size: 16px;
+  line-height: 1.6;
+  overscroll-behavior-y: none;
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px; height: 1px;
+  padding: 0; margin: -1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+
+/* ===== ヘッダー ===== */
+
+.appbar {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--gap);
+  padding: 10px 14px;
+  padding-top: calc(10px + env(safe-area-inset-top));
+  padding-left: calc(14px + env(safe-area-inset-left));
+  padding-right: calc(14px + env(safe-area-inset-right));
+  background: color-mix(in srgb, var(--bg) 88%, transparent);
+  -webkit-backdrop-filter: blur(12px);
+  backdrop-filter: blur(12px);
+  border-bottom: 1px solid var(--border);
+}
+
+.appbar__title {
+  margin: 0;
+  font-size: 17px;
+  font-weight: 700;
+  letter-spacing: .02em;
+}
+
+.appbar__actions { display: flex; gap: 6px; }
+
+.iconbtn {
+  min-width: var(--tap);
+  min-height: var(--tap);
+  display: grid;
+  place-items: center;
+  font-size: 19px;
+  color: var(--text);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 10px;
+  cursor: pointer;
+}
+.iconbtn:active { background: var(--surface-2); }
+.iconbtn[aria-expanded="true"] {
+  background: var(--surface-2);
+  border-color: var(--border);
+}
+
+/* ===== レイアウト ===== */
+
+.main {
+  padding: 16px 14px calc(28px + env(safe-area-inset-bottom));
+  padding-left: calc(14px + env(safe-area-inset-left));
+  padding-right: calc(14px + env(safe-area-inset-right));
+  max-width: 720px;
+  margin: 0 auto;
+}
+
+.view[hidden] { display: none; }
+
+.section-title {
+  margin: 26px 0 10px;
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+}
+.section-title:first-child { margin-top: 0; }
+
+/* ===== メッセージ ===== */
+
+.message {
+  margin: 0;
+  color: var(--text-dim);
+  font-size: 14px;
+}
+.message:empty { display: none; }
+
+.message--error {
+  padding: 12px 14px;
+  color: var(--text);
+  background: color-mix(in srgb, var(--danger) 16%, var(--surface));
+  border: 1px solid color-mix(in srgb, var(--danger) 45%, transparent);
+  border-radius: var(--radius);
+}
+.message--ok {
+  padding: 12px 14px;
+  color: var(--text);
+  background: color-mix(in srgb, var(--accent) 14%, var(--surface));
+  border: 1px solid color-mix(in srgb, var(--accent) 40%, transparent);
+  border-radius: var(--radius);
+}
+
+/* ===== フォーム ===== */
+
+.field { margin-bottom: 18px; }
+
+.field > label {
+  display: block;
+  margin-bottom: 6px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-dim);
+}
+
+.field__row { display: flex; gap: 8px; }
+.field__row > input { flex: 1; min-width: 0; }
+
+input[type="text"],
+input[type="password"] {
+  width: 100%;
+  min-height: var(--tap);
+  padding: 10px 12px;
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  /* 16px未満だとiOSがフォーカス時に自動ズームする */
+  font-size: 16px;
+  font-family: inherit;
+}
+input:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.hint {
+  margin: 8px 0 0;
+  font-size: 13px;
+  line-height: 1.55;
+  color: var(--text-dim);
+}
+.hint--warn { color: var(--warn); }
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-bottom: 14px;
+}
+
+.btn {
+  min-height: var(--tap);
+  padding: 10px 18px;
+  font-size: 15px;
+  font-weight: 600;
+  font-family: inherit;
+  color: var(--text);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  cursor: pointer;
+}
+.btn:active { transform: translateY(1px); }
+.btn[disabled] { opacity: .55; cursor: default; }
+
+.btn--primary {
+  color: var(--accent-text);
+  background: var(--accent);
+  border-color: transparent;
+  flex: 1;
+}
+.btn--ghost { background: transparent; }
+.btn--danger { color: var(--danger); background: transparent; }
+
+/* ===== カード一覧 ===== */
+
+.cards {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 10px;
+}
+
+.card {
+  padding: 14px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+.card__head {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 6px 8px;
+}
+
+.card__name { font-size: 16px; font-weight: 700; }
+.card__name-en { font-size: 12px; color: var(--text-dim); }
+
+.card__line {
+  margin: 6px 0 0;
+  font-size: 14px;
+  color: var(--text-dim);
+  overflow-wrap: anywhere;
+}
+
+.card__price {
+  margin-top: 8px;
+  font-size: 16px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+.card__price--none { font-weight: 400; font-size: 14px; color: var(--text-dim); }
+
+.badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 10px;
+}
+
+.badge {
+  padding: 3px 9px;
+  font-size: 12px;
+  font-weight: 600;
+  border-radius: 999px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  color: var(--text-dim);
+}
+.badge--vault {
+  color: var(--warn);
+  border-color: color-mix(in srgb, var(--warn) 45%, transparent);
+  background: color-mix(in srgb, var(--warn) 12%, transparent);
+}
+.badge--gallery {
+  color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 45%, transparent);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+}
+.badge--watch {
+  color: var(--text);
+  border-color: color-mix(in srgb, var(--accent) 55%, transparent);
+}
+
+/* ===== 取得状況 ===== */
+
+.fetch-status { display: grid; gap: 8px; }
+
+.filestat {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  padding: 10px 12px;
+  font-size: 13px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+.filestat__name {
+  font-weight: 700;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+.filestat__meta {
+  color: var(--text-dim);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+.filestat--ok .filestat__name { color: var(--accent); }
+.filestat--ng .filestat__name { color: var(--danger); }
+.filestat__error { flex-basis: 100%; color: var(--danger); }

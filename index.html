@@ -1,0 +1,102 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>サッカートレカ所持リスト</title>
+
+<meta name="color-scheme" content="dark light">
+<meta name="theme-color" content="#0F1720">
+<meta name="referrer" content="no-referrer">
+
+<link rel="manifest" href="./manifest.webmanifest">
+<link rel="icon" href="./icons/icon-192.png" sizes="192x192" type="image/png">
+<link rel="apple-touch-icon" href="./icons/apple-touch-icon-180.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="トレカリスト">
+
+<link rel="stylesheet" href="./css/style.css">
+</head>
+<body>
+
+<header class="appbar">
+  <h1 class="appbar__title">トレカ所持リスト</h1>
+  <div class="appbar__actions">
+    <button type="button" id="btn-reload" class="iconbtn" title="再読込">
+      <span aria-hidden="true">↻</span><span class="sr-only">再読込</span>
+    </button>
+    <button type="button" id="btn-settings" class="iconbtn" title="設定" aria-expanded="false">
+      <span aria-hidden="true">⚙</span><span class="sr-only">設定</span>
+    </button>
+  </div>
+</header>
+
+<main class="main">
+
+  <!-- ===== 一覧 ===== -->
+  <section id="view-list" class="view">
+    <p id="list-message" class="message" role="status" aria-live="polite"></p>
+    <ul id="card-list" class="cards"></ul>
+  </section>
+
+  <!-- ===== 設定 ===== -->
+  <section id="view-settings" class="view" hidden>
+    <form id="settings-form" novalidate>
+      <h2 class="section-title">接続設定</h2>
+
+      <div class="field">
+        <label for="input-owner">owner（GitHubアカウント）</label>
+        <input id="input-owner" name="owner" type="text" inputmode="url"
+               autocapitalize="none" autocorrect="off" spellcheck="false" required>
+      </div>
+
+      <div class="field">
+        <label for="input-repo">repo（データリポジトリ名）</label>
+        <input id="input-repo" name="repo" type="text" inputmode="url"
+               autocapitalize="none" autocorrect="off" spellcheck="false" required>
+      </div>
+
+      <div class="field">
+        <label for="input-token">Fine-grained PAT</label>
+        <div class="field__row">
+          <input id="input-token" name="token" type="password"
+                 autocapitalize="none" autocorrect="off" spellcheck="false"
+                 autocomplete="off" placeholder="github_pat_..." required>
+          <button type="button" id="btn-toggle-token" class="btn btn--ghost">表示</button>
+        </div>
+        <p class="hint">
+          対象リポジトリを <b>このデータリポジトリのみ</b> に限定し、権限は
+          <b>Contents: Read and write</b> で発行してください。
+        </p>
+        <p class="hint hint--warn">
+          トークンはこの端末の localStorage に平文で保存されます。共用端末では使わず、
+          不要になったら下の「設定を消去」で削除してください。
+        </p>
+      </div>
+
+      <div class="actions">
+        <button type="submit" class="btn btn--primary">保存して読み込む</button>
+        <button type="button" id="btn-clear" class="btn btn--danger">設定を消去</button>
+      </div>
+
+      <p id="settings-message" class="message" role="status" aria-live="polite"></p>
+    </form>
+
+    <h2 class="section-title">取得状況</h2>
+    <div id="fetch-status" class="fetch-status">
+      <p class="message">まだ読み込んでいません。</p>
+    </div>
+
+    <h2 class="section-title">このアプリについて</h2>
+    <p class="hint">
+      フェーズ0（骨格）。一覧は collection.json をそのまま表示しています。
+      オーバーレイ（prices.json / players_info.json）のマージ表示・ソート・検索はフェーズ1で追加します。
+    </p>
+  </section>
+
+</main>
+
+<script type="module" src="./js/app.js"></script>
+</body>
+</html>
