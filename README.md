@@ -48,9 +48,26 @@ js/render.js               データ → DOM（ビュー層）
 js/confirm.js              画面内の確認パネル（window.confirm の代わり）
 manifest.webmanifest       PWAマニフェスト（パスはすべて相対。GitHub Pagesのサブパス配信のため）
 sw.js                      Service Worker（ネットワーク優先の最小構成）
-icons/                     アイコン一式
+icons/                     アイコン一式（dev/gen_icons.ps1 で生成）
 dev/                       開発用。アプリ本体からは読み込まれない
 ```
+
+### アイコン
+
+`dev/icon-source.png`（正方形の元画像）から4枚を作る。
+
+```powershell
+powershell -ExecutionPolicy Bypass -File dev/gen_icons.ps1
+```
+
+| ファイル | 用途 | 作り方 |
+|---|---|---|
+| `icon-192.png` / `icon-512.png` | manifest の `purpose: any`、ブラウザのタブ | 元画像をそのまま縮小 |
+| `apple-touch-icon-180.png` | iOSのホーム画面 | 同上。iOS側が角丸マスクをかけるが、金の枠は内側に十分入っているので切れない |
+| `icon-512-maskable.png` | manifest の `purpose: maskable` | 内側70%に収め、地色を全面に敷く（円・角丸・しずく、どのマスクでも欠けない） |
+
+差し替えたら **`sw.js` の `CACHE_NAME` を1つ上げる**（古い殻のキャッシュを掴ませないため）。
+iOSのホーム画面に追加済みのアイコンは自動では変わらないので、一度削除して追加し直す。
 
 ### 設計上の約束ごと
 
