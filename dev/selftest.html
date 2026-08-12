@@ -54,6 +54,8 @@ import {
   replaceCard, removeCard, replacePlayer, addPlayerToCollection,
   retypePlayer, valuesFromCard, applyCardEdit,
 } from '../js/ingest.js';
+import { buildExport } from '../js/export.js';
+import { saveSnapshot, loadSnapshot, clearSnapshot } from '../js/cache.js';
 
 const results = document.getElementById('results');
 let passed = 0;
@@ -889,6 +891,116 @@ await test('commitCollection: 2回目も409なら諦めてユーザーに返す'
   } catch (error) { message = error.message; } finally { restore(); }
   assert(message.includes('再読込'), `文言が想定と違う: ${message}`);
 });
+
+/* ========== エクスポート ========== */
+
+/** 書き出し時刻の固定値（ローカル時間で 2026-08-12 21:30）。 */
+const EXPORT_DATE = new Date(2026, 7, 12, 21, 30, 0);
+
+const OVERLAYS = () => ({ prices: parse('prices.json'), playersInfo: parse('players_info.json') });
+
+await test('buildExport: オーバーレイを畳み込んだ1ファイルになる', () => {
+  const file = buildExport(parse('collection.json'), OVERLAYS(), EXPORT_DATE);
+  const json = JSON.parse(file.text);
+
+  assertEqual(json.schemaVersion, 1, 'schemaVersion');
+  const card = json.cards.find((c) => c.id === 'c-20260811-k3f');
+  assertEqual(card.price.current, 13000, '価格は prices.json 由来');
+  assertEqual(card.priceHistory.length, 3, '履歴も prices.json 由来');
+  const player = json.players.find((p) => p.id === 'p-0001');
+  assertEqual(player.infoUpdatedAt, '2026-08-12', '情報更新日は players_info.json 由来');
+  assertEqual(file.counts.cards, 2, 'カード枚数');
+  assertEqual(file.counts.players, 2, '選手数');
+});
+
+await test('buildExport: exportedAt は書き出した時刻。キーの並びは崩さない', () => {
+  const file = buildExport(parse('collection.json'), OVERLAYS(), EXPORT_DATE);
+  assert(file.json.exportedAt.startsWith('2026-08-12T21:30:00'), `exportedAt: ${file.json.exportedAt}`);
+  assertEqual(Object.keys(file.json).join(','), 'schemaVersion,exportedAt,players,cards', 'キーの並び');
+});
+
+await test('buildExport: 体裁はリポジトリの collection.json と同じ（差分が読める）', () => {
+  const file = buildExport(parse('collection.json'), OVERLAYS(), EXPORT_DATE);
+  assert(file.text.startsWith('{\n  "schemaVersion": 1,\n'), '先頭の体裁が違う');
+  assert(file.text.endsWith('}\n'), '末尾に改行がない');
+  // 深いオブジェクトは1行に畳む（1枚＝1ブロックを保つ）
+  assert(file.text.includes('"storage": { "type": "toploader", "name": null }'), 'storageが展開されている');
+});
+
+await test('buildExport: オーバーレイが無ければ台帳の値のまま', () => {
+  const file = buildExport(parse('collection.json'), { prices: null, playersInfo: null }, EXPORT_DATE);
+  const card = file.json.cards.find((c) => c.id === 'c-20260811-k3f');
+  assertEqual(card.price.current, 12000, '台帳の価格');
+  assertEqual(file.json.players[0].infoUpdatedAt, '2026-08-01', '台帳の情報更新日');
+});
+
+await test('buildExport: ファイル名は日付つき', () => {
+  assertEqual(buildExport(parse('collection.json'), OVERLAYS(), EXPORT_DATE).filename,
+    'collection-2026-08-12.json', 'filename');
+});
+
+/* ========== オフライン用キャッシュ ========== */
+
+/**
+ * このページはアプリと同一オリジンなので、テストが本番のキャッシュを壊さないよう
+ * 現物を退避してから触り、最後に必ず戻す。
+ */
+async function withCleanCache(body) {
+  const KEY = 'soccer-cards:snapshot';
+  const saved = localStorage.getItem(KEY);
+  try {
+    localStorage.removeItem(KEY);
+    await body();
+  } finally {
+    if (saved === null) localStorage.removeItem(KEY);
+    else localStorage.setItem(KEY, saved);
+  }
+}
+
+const SNAPSHOT = () => ({
+  collection: { json: parse('collection.json'), sha: 'sha-abc' },
+  overlays: OVERLAYS(),
+  fetchedAt: '2026-08-12T21:30:00+09:00',
+});
+
+await test('キャッシュ: 保存した内容がそのまま戻る', () => withCleanCache(() => {
+  assertEqual(saveSnapshot(SETTINGS, SNAPSHOT()), true, '保存できた');
+  const restored = loadSnapshot(SETTINGS);
+  assertEqual(restored.collection.sha, 'sha-abc', 'sha');
+  assertEqual(restored.fetchedAt, '2026-08-12T21:30:00+09:00', 'fetchedAt');
+  assertEqual(restored.collection.json.cards.length, 2, 'カード枚数');
+  assertEqual(restored.overlays.prices.prices['c-20260811-k3f'].current, 13000, 'オーバーレイも残る');
+  // 復元した内容がそのままマージできる＝オフラインでも一覧が出せる
+  const { merged } = mergeCollection(restored.collection.json, restored.overlays.prices, restored.overlays.playersInfo);
+  assertEqual(merged.cards.find((c) => c.id === 'c-20260811-k3f').price.current, 13000, 'マージ後の価格');
+}));
+
+await test('キャッシュ: 別のリポジトリの保存分は出さない', () => withCleanCache(() => {
+  saveSnapshot(SETTINGS, SNAPSHOT());
+  assertEqual(loadSnapshot({ ...SETTINGS, repo: 'other-repo' }), null, '別repo');
+  assertEqual(loadSnapshot({ ...SETTINGS, owner: 'other-owner' }), null, '別owner');
+}));
+
+await test('キャッシュ: 壊れていても落ちずに null', () => withCleanCache(() => {
+  localStorage.setItem('soccer-cards:snapshot', '{壊れたJSON');
+  assertEqual(loadSnapshot(SETTINGS), null, '壊れたJSON');
+  localStorage.setItem('soccer-cards:snapshot', JSON.stringify({ version: 99, owner: SETTINGS.owner, repo: SETTINGS.repo }));
+  assertEqual(loadSnapshot(SETTINGS), null, '知らない版');
+}));
+
+await test('キャッシュ: 消したら残らない（設定消去と一緒に呼ぶ）', () => withCleanCache(() => {
+  saveSnapshot(SETTINGS, SNAPSHOT());
+  clearSnapshot();
+  assertEqual(loadSnapshot(SETTINGS), null, '消去後');
+  assertEqual(localStorage.getItem('soccer-cards:snapshot'), null, 'キーごと消える');
+}));
+
+await test('キャッシュ: 保存分からエクスポートできる（オフラインのバックアップ）', () => withCleanCache(() => {
+  saveSnapshot(SETTINGS, SNAPSHOT());
+  const restored = loadSnapshot(SETTINGS);
+  const file = buildExport(restored.collection.json, restored.overlays, EXPORT_DATE);
+  assertEqual(file.json.cards.find((c) => c.id === 'c-20260811-k3f').price.current, 13000, '価格');
+}));
 
 /* ========== 実データを実際に描画して目視確認 ========== */
 

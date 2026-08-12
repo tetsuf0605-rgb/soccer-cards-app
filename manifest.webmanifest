@@ -4,6 +4,7 @@
   "description": "サッカートレーディングカードのコレクション管理",
   "lang": "ja",
   "dir": "ltr",
+  "id": "./",
   "start_url": "./",
   "scope": "./",
   "display": "standalone",

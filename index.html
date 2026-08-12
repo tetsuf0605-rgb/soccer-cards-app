@@ -37,6 +37,9 @@
 
 <main class="main">
 
+  <!-- オフライン（＝最終取得のキャッシュを表示中）の告知。全画面に共通で出す -->
+  <p id="offline-banner" class="banner" role="status" aria-live="polite" hidden></p>
+
   <!-- ===== 一覧 ===== -->
   <section id="view-list" class="view">
     <div class="toolbar">
@@ -295,13 +298,29 @@
       <p class="message">まだ読み込んでいません。</p>
     </div>
 
+    <h2 class="section-title">エクスポート（バックアップ）</h2>
+    <p class="hint">
+      価格・所属を畳み込んだ<b>マージ済みの collection.json</b>（v1.2形式）を1ファイルで書き出します。
+      月1回ほど手元にも保存しておくと、リポジトリと二重に持てます。オフラインでも
+      最終取得の内容で書き出せます。
+    </p>
+    <div class="actions">
+      <button type="button" id="btn-export-share" class="btn btn--primary" hidden>共有 / ファイルに保存</button>
+      <button type="button" id="btn-export" class="btn">ダウンロード</button>
+    </div>
+    <p id="export-message" class="message" role="status" aria-live="polite"></p>
+
     <h2 class="section-title">このアプリについて</h2>
     <p class="hint">
-      フェーズ3。一覧は collection.json に prices.json / players_info.json を
+      一覧は collection.json に prices.json / players_info.json を
       重ねた（オーバーレイ優先）結果です。取り込みは右上の「＋」から、
       編集・価格ウォッチ切替・「倉庫へ移動（登録解除）」は各カードの詳細から。
       書き込むのは collection.json だけで、1操作ごとに1コミットします。
-      エクスポートとオフライン閲覧はフェーズ4で追加します。
+    </p>
+    <p class="hint">
+      最後に読み込めた内容はこの端末に保存され、オフラインでも閲覧・エクスポートできます。
+      登録・編集・登録解除はオンラインで再読込（右上の ↻）してからになります。
+      保存した内容は「設定を消去」でPATと一緒に消えます。
     </p>
   </section>
 

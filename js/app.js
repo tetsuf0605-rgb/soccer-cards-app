@@ -1,10 +1,10 @@
 /**
- * エントリポイント（フェーズ3）。
+ * エントリポイント。
  *
  * できること: 接続設定、3ファイルの取得とオーバーレイマージ、一覧・詳細、
  * 8項目ソート、選手名検索、判定JSONの取り込み、カードの編集・登録解除・
- * priceWatch切替（いずれも collection.json へのPUT・409リトライ付き）。
- * エクスポートとオフライン閲覧はフェーズ4。
+ * priceWatch切替（いずれも collection.json へのPUT・409リトライ付き）、
+ * マージ済みcollection.jsonのエクスポート、最終取得データのオフライン閲覧。
  */
 import { loadSettings, saveSettings, clearSettings, isConfigured } from './config.js';
 import { fetchAllFiles, commitCollection, DATA_FILES } from './github.js';
@@ -15,6 +15,8 @@ import { createIngestForm } from './ingestform.js';
 import { createEditForm } from './editform.js';
 import { askConfirm, closeConfirm } from './confirm.js';
 import { removeCard, replaceCard } from './ingest.js';
+import { loadSnapshot, saveSnapshot, clearSnapshot } from './cache.js';
+import { buildExport, canShareFile, shareFile, downloadFile } from './export.js';
 
 const els = {
   reload: document.getElementById('btn-reload'),
@@ -45,6 +47,10 @@ const els = {
   clear: document.getElementById('btn-clear'),
   settingsMessage: document.getElementById('settings-message'),
   fetchStatus: document.getElementById('fetch-status'),
+  offlineBanner: document.getElementById('offline-banner'),
+  exportDownload: document.getElementById('btn-export'),
+  exportShare: document.getElementById('btn-export-share'),
+  exportMessage: document.getElementById('export-message'),
 };
 
 let settings = loadSettings();
@@ -61,6 +67,14 @@ const state = {
   sortId: DEFAULT_SORT_ID,
   desc: false,
   query: '',
+  /** 表示中のデータをGitHubから取れた時刻（ISO）。キャッシュ表示のときは取得当時の時刻 */
+  fetchedAt: '',
+  /**
+   * 表示中のデータがこのセッションでGitHubから取れたものか。
+   * false＝キャッシュ表示。書き込みは常にこれが true のときだけ許す
+   * （保存同期方式仕様 §4「登録・編集はオンライン時のみ」）
+   */
+  fresh: false,
 };
 
 /* ===== 一覧 ===== */
@@ -97,13 +111,37 @@ function renderList() {
 
 /* ===== 読み込み ===== */
 
+function formatFetchedAt(iso) {
+  const date = new Date(iso);
+  return Number.isNaN(date.getTime()) ? '不明' : date.toLocaleString('ja-JP');
+}
+
 function showFetchStatus(result) {
   els.fetchStatus.replaceChildren(
     buildFileStat(DATA_FILES.collection, { ok: true, ...result.collection }),
     buildFileStat(DATA_FILES.prices, result.prices),
     buildFileStat(DATA_FILES.playersInfo, result.playersInfo),
-    el('p', 'message', `最終取得: ${new Date(result.fetchedAt).toLocaleString('ja-JP')}`),
+    el('p', 'message', `最終取得: ${formatFetchedAt(result.fetchedAt)}`),
   );
+}
+
+/**
+ * 保存済みキャッシュを画面に出す（起動時と、取得に失敗したとき）。
+ * @returns {boolean} 出せたら true
+ */
+function showSnapshot() {
+  if (!isConfigured(settings)) return false;
+  const snapshot = loadSnapshot(settings);
+  if (!snapshot) return false;
+
+  state.collection = snapshot.collection;
+  state.overlays = snapshot.overlays;
+  state.fetchedAt = snapshot.fetchedAt;
+  state.fresh = false;
+  applyMerge();
+  renderList();
+  updateWriteAvailability();
+  return true;
 }
 
 async function load() {
@@ -128,10 +166,25 @@ async function load() {
       prices: result.prices.ok ? result.prices.json : null,
       playersInfo: result.playersInfo.ok ? result.playersInfo.json : null,
     };
+    state.fetchedAt = result.fetchedAt;
+    state.fresh = true;
     applyMerge();
 
     showFetchStatus(result);
     renderList();
+    updateWriteAvailability();
+
+    // オフライン閲覧用に取り置く。落ちても今の表示には影響しない
+    const cached = saveSnapshot(settings, {
+      collection: state.collection,
+      overlays: state.overlays,
+      fetchedAt: state.fetchedAt,
+    });
+    if (!cached) {
+      // 黙って落とすとオフラインで開けない理由が分からなくなる
+      els.fetchStatus.append(el('p', 'message message--error',
+        'この端末に保存できませんでした（容量不足など）。オフラインでは閲覧できません。'));
+    }
 
     // オーバーレイが欠けても台帳は表示できる。件数は残したまま警告を足す
     const missing = [
@@ -146,15 +199,59 @@ async function load() {
       );
     }
   } catch (error) {
-    state.collection = null;
-    state.rows = [];
-    els.cardList.replaceChildren();
-    setMessage(els.listMessage, error.message, 'error');
+    // 取得できなくても、前に読めた内容があるなら閲覧だけは続けられるようにする
+    state.fresh = false;
+    const restored = showSnapshot();
+    if (!restored) {
+      state.collection = null;
+      state.rows = [];
+      els.cardList.replaceChildren();
+    }
+    setMessage(
+      els.listMessage,
+      restored
+        ? `${error.message}｜${formatFetchedAt(state.fetchedAt)} に取得した内容を表示しています（閲覧のみ）。`
+        : error.message,
+      'error',
+    );
     els.fetchStatus.replaceChildren(el('p', 'message', error.message));
+    updateWriteAvailability();
   } finally {
     loading = false;
     els.reload.disabled = false;
   }
+}
+
+/* ===== オフラインの扱い ===== */
+
+/**
+ * 書き込み（取り込み・編集・登録解除・ウォッチ切替）を許してよいか。
+ *
+ * 「このセッションでGitHubから取れた」ことを条件にする。キャッシュのshaで
+ * PUTすると、他端末の更新を巻き戻す形になりかねないため。
+ */
+function writesAllowed() {
+  // navigator.onLine は「オフラインだと確実に分かるとき」だけ false を返す。
+  // 信用しすぎない使い方（＝ボタンを止めるだけ）に留める
+  return Boolean(state.collection && state.fresh && navigator.onLine !== false);
+}
+
+/** 書き込み系のボタンとオフライン告知を、いまの状態に合わせる。 */
+function updateWriteAvailability() {
+  const allowed = writesAllowed();
+  els.importToggle.disabled = !allowed;
+  els.edit.disabled = !allowed;
+  els.watch.disabled = !allowed;
+  els.delete.disabled = !allowed;
+
+  const showBanner = Boolean(state.collection) && !allowed;
+  els.offlineBanner.hidden = !showBanner;
+  if (!showBanner) return;
+
+  els.offlineBanner.textContent = state.fresh
+    ? 'オフラインです。閲覧とエクスポートはできます（登録・編集はオンラインに戻ってから）。'
+    : `閲覧のみ（${formatFetchedAt(state.fetchedAt)} 取得の保存分を表示中）。`
+      + '登録・編集はオンラインで ↻ を押して読み直してから。';
 }
 
 /* ===== 画面の切り替え ===== */
@@ -198,9 +295,14 @@ function openDetail(cardId, note) {
 }
 
 function setDetailBusy(busy) {
-  els.edit.disabled = busy;
-  els.watch.disabled = busy;
-  els.delete.disabled = busy;
+  if (!busy) {
+    // 通信中でなくなっても、オフラインなら押せないままにする
+    updateWriteAvailability();
+    return;
+  }
+  els.edit.disabled = true;
+  els.watch.disabled = true;
+  els.delete.disabled = true;
 }
 
 /* ===== 書き込み ===== */
@@ -258,6 +360,16 @@ function requireLoaded(action) {
   if (!state.collection) {
     showView('list');
     setMessage(els.listMessage, `${action}の前に台帳を読み込んでください（右上の ↻）。`, 'error');
+    return false;
+  }
+  if (!state.fresh) {
+    // キャッシュ表示中。持っているshaが今のリポジトリと一致する保証がない
+    showView('list');
+    setMessage(
+      els.listMessage,
+      `オフライン（保存分の表示）のため${action}はできません。オンラインで ↻ を押して読み直してください。`,
+      'error',
+    );
     return false;
   }
   return true;
@@ -334,6 +446,52 @@ async function deleteCard() {
   setMessage(els.listMessage, `倉庫へ移動しました（${cardId}）`, 'ok');
 }
 
+/* ===== エクスポート ===== */
+
+/** いま表示している内容から書き出しファイルを作る。読み込み前なら null。 */
+function currentExport() {
+  if (!state.collection) {
+    setMessage(els.exportMessage, '先に台帳を読み込んでください（右上の ↻）。', 'error');
+    return null;
+  }
+  return buildExport(state.collection.json, state.overlays);
+}
+
+/** 書き出したあとの案内。オーバーレイが欠けたまま書き出した場合は但し書きを付ける。 */
+function exportDoneMessage(file, how) {
+  const missing = [
+    state.overlays.prices ? null : DATA_FILES.prices,
+    state.overlays.playersInfo ? null : DATA_FILES.playersInfo,
+  ].filter(Boolean);
+  const base = `${file.filename} を${how}（カード${file.counts.cards}枚 / 選手${file.counts.players}人）`;
+  return missing.length > 0
+    ? `${base}｜${missing.join(' / ')} が無いため、価格・所属は台帳の値のままです。`
+    : base;
+}
+
+async function exportShare() {
+  const file = currentExport();
+  if (!file) return;
+  try {
+    const shared = await shareFile(file.text, file.filename);
+    setMessage(els.exportMessage, shared ? exportDoneMessage(file, '共有しました') : '共有をやめました。',
+      shared ? 'ok' : undefined);
+  } catch (error) {
+    setMessage(els.exportMessage, `共有できませんでした（${error.message}）。ダウンロードを試してください。`, 'error');
+  }
+}
+
+function exportDownload() {
+  const file = currentExport();
+  if (!file) return;
+  try {
+    downloadFile(file.text, file.filename);
+    setMessage(els.exportMessage, exportDoneMessage(file, '書き出しました'), 'ok');
+  } catch (error) {
+    setMessage(els.exportMessage, `書き出せませんでした（${error.message}）。`, 'error');
+  }
+}
+
 /* ===== ソートUI ===== */
 
 function fillSortOptions() {
@@ -400,6 +558,16 @@ els.sortDir.addEventListener('click', () => {
   renderList();
 });
 
+els.exportDownload.addEventListener('click', exportDownload);
+els.exportShare.addEventListener('click', exportShare);
+
+// 圏外から戻ったら、キャッシュ表示のままにせず取り直す（＝編集できる状態に戻す）
+window.addEventListener('online', () => {
+  if (state.fresh) updateWriteAvailability();
+  else load();
+});
+window.addEventListener('offline', updateWriteAvailability);
+
 els.toggleToken.addEventListener('click', () => {
   const hidden = els.token.type === 'password';
   els.token.type = hidden ? 'text' : 'password';
@@ -424,7 +592,7 @@ els.form.addEventListener('submit', (event) => {
 
 els.clear.addEventListener('click', async () => {
   const confirmed = await askConfirm(els.settingsConfirm, {
-    text: '保存した設定（PATを含む）をこの端末から消去しますか？',
+    text: '保存した設定（PATを含む）とオフライン用の保存データを、この端末から消去しますか？',
     note: 'GitHub側のトークンは無効になりません。不要なトークンはGitHubの設定画面で失効させてください。',
     yesLabel: '消去する',
     danger: true,
@@ -432,6 +600,8 @@ els.clear.addEventListener('click', async () => {
   if (!confirmed) return;
 
   clearSettings();
+  // PATを消す＝この端末を手放す場面。所持リストの写しも残さない
+  clearSnapshot();
   settings = loadSettings();
   els.owner.value = settings.owner;
   els.repo.value = settings.repo;
@@ -441,8 +611,12 @@ els.clear.addEventListener('click', async () => {
   detailCardId = null;
   state.collection = null;
   state.rows = [];
+  state.fetchedAt = '';
+  state.fresh = false;
   els.cardList.replaceChildren();
   els.fetchStatus.replaceChildren(el('p', 'message', 'まだ読み込んでいません。'));
+  setMessage(els.exportMessage, '');
+  updateWriteAvailability();
   setMessage(els.settingsMessage, '消去しました。', 'ok');
 });
 
@@ -451,6 +625,13 @@ els.clear.addEventListener('click', async () => {
 fillSortOptions();
 updateSortDirLabel();
 showView('list');
+els.exportShare.hidden = !canShareFile();
+updateWriteAvailability();
+
+// 通信を待たずに、前回読めた内容をまず出す（圏外でも一覧が開く）
+if (showSnapshot()) {
+  setMessage(els.listMessage, `${els.listMessage.textContent}｜${formatFetchedAt(state.fetchedAt)} 取得の保存分`);
+}
 load();
 
 // file:// ではSWを登録できないため、http(s)配信時のみ

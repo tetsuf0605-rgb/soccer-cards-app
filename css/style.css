@@ -146,6 +146,18 @@ body {
   border-radius: var(--radius);
 }
 
+/* オフライン（キャッシュ表示中）の告知。どの画面でも同じ位置に出す */
+.banner {
+  margin: 0 0 14px;
+  padding: 10px 14px;
+  font-size: 13px;
+  color: var(--text);
+  background: color-mix(in srgb, var(--warn) 16%, var(--surface));
+  border: 1px solid color-mix(in srgb, var(--warn) 45%, transparent);
+  border-radius: var(--radius);
+}
+.banner[hidden] { display: none; }
+
 /* ===== フォーム ===== */
 
 .field { margin-bottom: 18px; }
