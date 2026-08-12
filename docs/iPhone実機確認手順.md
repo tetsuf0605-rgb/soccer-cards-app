@@ -11,29 +11,27 @@
 
 ---
 
-## 1. GitHub Pages を有効にする（PC）
+## 1. GitHub Pages を有効にする（PC）— ✅ 2026-08-13 実施済み
 
-現状は未有効なので、まずここから。
+公開URL: **<https://tetsuf0605-rgb.github.io/soccer-cards-app/>**
 
-**画面から**: リポジトリ `soccer-cards-app` → Settings → Pages →
-Source: `Deploy from a branch` → Branch: `main` / `/ (root)` → Save
+`main` / `/ (root)` から配信する設定で有効化し、公開後に次を確認済み。
 
-**コマンドから**:
+- [x] 公開URLが200で開き、CSS・JSが当たっている（サブパス配信でパスが壊れていない）
+- [x] `manifest.webmanifest` が `application/manifest+json` で返り、
+      `start_url` / `scope` / アイコンが `/soccer-cards-app/` に解決される（相対パス指定の狙いどおり）
+- [x] Service Worker が `/soccer-cards-app/` スコープで登録される
+- [x] 並び替えの8項目が出る（この時点では一覧は空でよい。PAT未設定のため）
 
-```bash
-gh api -X POST repos/tetsuf0605-rgb/soccer-cards-app/pages -f "source[branch]=main" -f "source[path]=/"
-```
-
-公開URLは `https://tetsuf0605-rgb.github.io/soccer-cards-app/`。
-初回は反映まで1〜2分かかる（Actionsタブの `pages build and deployment` が緑になれば完了）。
+設定を確認したいときは:
 
 ```bash
 gh api repos/tetsuf0605-rgb/soccer-cards-app/pages --jq '{url:.html_url,status:.status}'
 ```
 
-- [ ] PCのブラウザで公開URLが開き、「トレカ所持リスト」の画面が出る
-- [ ] 背景色や上部バーが効いている（CSS・JSが読めている＝サブパス配信でパスが壊れていない）
-- [ ] この時点では一覧は空でよい（PAT未設定のため）
+> 以後、pushすると数分でPagesに反映される（Actionsタブの `pages build and deployment` が完了すれば公開済み）。
+> 有効化した直後の1本目のビルドは、まだ設定が固まる前に走るため失敗することがある。
+> 次のpushで `built` になっていれば問題ない。
 
 ---
 
@@ -60,7 +58,8 @@ GitHub → Settings → Developer settings → Personal access tokens → **Fine
 
 ## 3. ホーム画面に追加する（iPhone）
 
-1. **Safari** で公開URLを開く（Chrome等から追加してもPWAにはならない）
+1. **Safari** で <https://tetsuf0605-rgb.github.io/soccer-cards-app/> を開く
+   （Chrome等から追加してもPWAにはならない）
 2. 共有 → 「ホーム画面に追加」 → 名前は「トレカリスト」でOK
 
 - [ ] ホーム画面にアイコンが出た
