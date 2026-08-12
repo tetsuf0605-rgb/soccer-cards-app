@@ -42,10 +42,18 @@
 <script type="module">
 import { FIXTURES } from './fixtures.js';
 import { encodeBase64Utf8, decodeBase64Utf8 } from '../js/base64.js';
-import { fetchAllFiles, getJsonFile, DATA_FILES, WRITABLE_PATH } from '../js/github.js';
+import { fetchAllFiles, getJsonFile, putCollection, commitCollection, DATA_FILES, WRITABLE_PATH } from '../js/github.js';
 import { buildCardList, buildDetail, formatPrice, formatStorage } from '../js/render.js';
 import { mergeCollection } from '../js/merge.js';
 import { buildRows, sortRows, filterRows, foldText, SORT_OPTIONS } from '../js/query.js';
+import { stringifyCollection } from '../js/serialize.js';
+import {
+  parseIngestJson, matchPlayers, searchPlayers, nextPlayerId, makeCardId,
+  collectValues, collectBinderNames, buildCardRecord, buildPlayerRecord,
+  addToCollection, toIsoDate, toIsoTimestamp, normalizeKey,
+  replaceCard, removeCard, replacePlayer, addPlayerToCollection,
+  retypePlayer, valuesFromCard, applyCardEdit,
+} from '../js/ingest.js';
 
 const results = document.getElementById('results');
 let passed = 0;
@@ -456,6 +464,430 @@ await test('詳細: オーバーレイが無ければ注記も出ない', () => 
   const rows = buildRows(merged);
   const node = buildDetail(rows[0], sources);
   assert(!node.textContent.includes('prices.json'), '注記が出てしまっている');
+});
+
+/* ========== 書き出しの体裁 ========== */
+
+await test('stringifyCollection: 仕様§3の体裁（1カード=1ブロック）で書き出す', () => {
+  const text = decodeBase64Utf8(FIXTURES['collection.json'].content);
+  // 実ファイルと1バイトも違わない＝1枚足しても差分がその1ブロックで収まる
+  assertEqual(stringifyCollection(JSON.parse(text)), text, '書き出し結果');
+});
+
+await test('stringifyCollection: 未知のフィールドを落とさない', () => {
+  const text = stringifyCollection({ schemaVersion: 1, cards: [{ id: 'c-x', future: { a: 1 } }] });
+  assert(text.includes('"future"'), '未知のキーが消えている');
+  assertEqual(JSON.parse(text).cards[0].future.a, 1, '往復した値');
+});
+
+/* ========== 取り込み: 判定JSONの読み取り ========== */
+
+const SAMPLE_ITEM = {
+  schemaVersion: 1,
+  items: [{
+    card: {
+      maker: 'Panini', series: 'Prizm Premier League', season: '2023-24', cardNo: '110',
+      variation: 'Silver Prizm', serial: '23/99', features: ['patch'],
+      teamOnCard: 'Borussia Dortmund', notes: '裏面: パッチは試合着用（Match-Worn）と記載',
+    },
+    player: {
+      name: 'ジュード・ベリンガム', nameEn: 'Jude Bellingham',
+      nationality: 'イングランド', currentTeam: 'Real Madrid', status: 'active',
+    },
+    needsCheck: ['serial'],
+  }],
+};
+
+await test('parseIngestJson: §4のJSONを読み取る', () => {
+  const items = parseIngestJson(JSON.stringify(SAMPLE_ITEM));
+  assertEqual(items.length, 1, '件数');
+  assertEqual(items[0].card.serial, '23/99', 'シリアル');
+  assertEqual(items[0].player.nameEn, 'Jude Bellingham', 'nameEn');
+  assertEqual(items[0].needsCheck.join(','), 'serial', 'needsCheck');
+});
+
+await test('parseIngestJson: コードブロックごと貼っても読める', () => {
+  const pasted = '```json\n' + JSON.stringify(SAMPLE_ITEM) + '\n```';
+  assertEqual(parseIngestJson(pasted).length, 1, '件数');
+});
+
+await test('parseIngestJson: まとめ撮り（複数件）', () => {
+  const many = { schemaVersion: 1, items: [SAMPLE_ITEM.items[0], SAMPLE_ITEM.items[0], SAMPLE_ITEM.items[0]] };
+  assertEqual(parseIngestJson(JSON.stringify(many)).length, 3, '件数');
+});
+
+await test('parseIngestJson: 読めない項目はnull・既定値に落ちる', () => {
+  const [item] = parseIngestJson(JSON.stringify({
+    items: [{ card: { maker: 'Topps', series: 'Chrome', serial: null }, player: { nameEn: 'X Y' } }],
+  }));
+  assertEqual(item.card.season, null, 'season');
+  assertEqual(item.card.features.length, 0, 'features既定');
+  assertEqual(item.card.notes, '', 'notes既定');
+  assertEqual(item.player.status, 'unknown', 'status既定');
+});
+
+await test('parseIngestJson: 壊れた入力は日本語で断る', () => {
+  const cases = [
+    ['', '貼り付け'],
+    ['{ nope', 'JSONとして読めません'],
+    ['{"schemaVersion":1}', 'items'],
+    ['{"items":[]}', '空'],
+    ['{"items":[{"player":{}}]}', 'card'],
+  ];
+  for (const [input, needle] of cases) {
+    let message = '';
+    try { parseIngestJson(input); } catch (error) { message = error.message; }
+    assert(message.includes(needle), `「${input}」の文言に「${needle}」がない: ${message}`);
+  }
+});
+
+/* ========== 取り込み: 選手マッチ ========== */
+
+await test('選手マッチ: 大文字小文字・空白・記号のゆらぎを吸収する', () => {
+  const players = parse('collection.json').players;
+  for (const nameEn of ['jude bellingham', 'JUDE  BELLINGHAM', 'Jude-Bellingham']) {
+    const hits = matchPlayers(players, { nameEn });
+    assertEqual(hits[0]?.score, 3, `${nameEn} の一致スコア`);
+    assertEqual(hits[0]?.player.id, 'p-0001', `${nameEn} の紐づけ先`);
+  }
+});
+
+await test('選手マッチ: アクセント記号の有無を無視する', () => {
+  assertEqual(normalizeKey('Kylian Mbappé'), normalizeKey('Kylian Mbappe'), '正規化キー');
+});
+
+await test('選手マッチ: カナ名でも一致する / 別人は候補にしない', () => {
+  const players = parse('collection.json').players;
+  assertEqual(matchPlayers(players, { name: '三笘薫' })[0].player.id, 'p-0002', 'カナ一致');
+  assertEqual(matchPlayers(players, { nameEn: 'Erling Haaland' }).length, 0, '別人');
+});
+
+await test('選手マッチ: 姓だけ一致は弱い候補（score 1）として出す', () => {
+  const players = parse('collection.json').players;
+  const hits = matchPlayers(players, { nameEn: 'J. Bellingham' });
+  assertEqual(hits[0].score, 1, 'スコア');
+  assertEqual(hits[0].player.id, 'p-0001', '候補');
+});
+
+await test('選手検索: かな入力でも当たる', () => {
+  const players = parse('collection.json').players;
+  assertEqual(searchPlayers(players, 'べりんがむ').length, 1, 'ひらがな');
+  assertEqual(searchPlayers(players, '').length, 2, '空文字は全件');
+});
+
+/* ========== 取り込み: 採番 ========== */
+
+await test('nextPlayerId: 既存の最大値+1（4桁ゼロ埋め）', () => {
+  assertEqual(nextPlayerId(parse('collection.json').players), 'p-0003', '次のID');
+  assertEqual(nextPlayerId([]), 'p-0001', '1人目');
+  assertEqual(nextPlayerId([{ id: 'p-0009' }, { id: 'p-0003' }]), 'p-0010', '欠番は埋めない');
+});
+
+await test('makeCardId: c-YYYYMMDD-乱数3桁。既存と衝突したら引き直す', () => {
+  const date = new Date(2026, 7, 12);
+  assertEqual(makeCardId([], date, () => 'k3f'), 'c-20260812-k3f', '形式');
+  let call = 0;
+  const id = makeCardId(['c-20260812-aaa'], date, () => (call++ === 0 ? 'aaa' : 'bbb'));
+  assertEqual(id, 'c-20260812-bbb', '衝突時の引き直し');
+});
+
+await test('makeCardId: 実際の乱数でも形式を満たす', () => {
+  assert(/^c-\d{8}-[a-z0-9]{3}$/.test(makeCardId([])), '形式が違う');
+});
+
+await test('toIsoDate / toIsoTimestamp: 端末のローカル日付で作る', () => {
+  assertEqual(toIsoDate(new Date(2026, 7, 3)), '2026-08-03', '日付');
+  assert(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}[+-]\d{2}:\d{2}$/.test(toIsoTimestamp(new Date())), '時刻の形式');
+});
+
+/* ========== 取り込み: レコード構築 ========== */
+
+const FORM_INPUT = {
+  maker: ' Panini ', series: 'Donruss', season: '2024-25', cardNo: 'K-14',
+  variation: '', serial: '', features: ['patch'], teamOnCard: 'Brighton & Hove Albion',
+  tier: 'gallery', storageType: 'binder', storageName: 'BINDER-A',
+  priceWatch: false, price: undefined, notes: '',
+};
+
+await test('buildCardRecord: v1.2のキーが順番どおりに揃う', () => {
+  const card = buildCardRecord('c-20260812-m7q', 'p-0002', FORM_INPUT, new Date(2026, 7, 12));
+  assertEqual(Object.keys(card).join(','),
+    'id,playerId,maker,series,season,cardNo,variation,serial,features,teamOnCard,'
+    + 'tier,storage,priceWatch,price,priceHistory,notes,addedAt', 'キーの順序');
+  assertEqual(card.maker, 'Panini', '前後の空白は落とす');
+  assertEqual(card.variation, 'Base', 'バリエーション既定');
+  assertEqual(card.serial, null, '空欄はnull');
+  assertEqual(card.price, null, '価格未入力');
+  assertEqual(card.priceHistory.length, 0, '履歴は空で始まる');
+  assertEqual(card.addedAt, '2026-08-12', '登録日');
+  assertEqual(JSON.stringify(card.storage), '{"type":"binder","name":"BINDER-A"}', '収納先');
+});
+
+await test('buildCardRecord: 価格を入れたら 手動・当日 で記録する', () => {
+  const card = buildCardRecord('c-x', 'p-1', { ...FORM_INPUT, price: 12000 }, new Date(2026, 7, 12));
+  assertEqual(JSON.stringify(card.price),
+    '{"current":12000,"checkedAt":"2026-08-12","source":"手動"}', 'price');
+});
+
+await test('buildCardRecord: バインダー以外は収納先の名前をnullにする', () => {
+  const card = buildCardRecord('c-x', 'p-1', { ...FORM_INPUT, storageType: 'toploader' });
+  assertEqual(card.storage.name, null, 'name');
+});
+
+await test('buildPlayerRecord: infoUpdatedAtはcowork欄なのでnullで置く', () => {
+  const player = buildPlayerRecord('p-0003', { name: '久保建英', nameEn: 'Takefusa Kubo', nationality: '', status: 'active' });
+  assertEqual(Object.keys(player).join(','),
+    'id,name,nameEn,nationality,currentTeam,status,infoUpdatedAt,notes', 'キーの順序');
+  assertEqual(player.nationality, '不明', '国籍の既定');
+  assertEqual(player.infoUpdatedAt, null, 'infoUpdatedAt');
+  assertEqual(player.currentTeam, null, '未入力はnull');
+});
+
+await test('addToCollection: 末尾に足すだけで既存を書き換えない', () => {
+  const base = parse('collection.json');
+  const snapshot = JSON.stringify(base);
+  const card = buildCardRecord('c-20260812-new', 'p-0001', FORM_INPUT);
+  const next = addToCollection(base, { card, player: null });
+
+  assertEqual(JSON.stringify(base), snapshot, '入力が書き換えられた');
+  assertEqual(next.cards.length, 3, 'カード枚数');
+  assertEqual(next.cards[2].id, 'c-20260812-new', '末尾に追加');
+  assertEqual(next.players.length, 2, '選手は増えない');
+  assertEqual(Object.keys(next).join(','), 'schemaVersion,exportedAt,players,cards', 'トップレベルのキー');
+});
+
+await test('addToCollection: 新規選手も一緒に足せる', () => {
+  const base = parse('collection.json');
+  const player = buildPlayerRecord('p-0003', { name: '久保建英', nameEn: 'Takefusa Kubo', nationality: '日本', status: 'active' });
+  const next = addToCollection(base, { card: buildCardRecord('c-x', 'p-0003', FORM_INPUT), player });
+  assertEqual(next.players.length, 3, '選手数');
+  assertEqual(next.players[2].id, 'p-0003', '末尾に追加');
+});
+
+await test('オートコンプリート用の既存値を集める', () => {
+  const cards = parse('collection.json').cards;
+  assertEqual(collectValues(cards, 'series').join(' | '), 'Donruss | Prizm Premier League', 'シリーズ');
+  assertEqual(collectValues(cards, 'variation').join(' | '), 'Kaboom! | Silver Prizm', 'バリエーション');
+  assertEqual(collectBinderNames(cards).join(' | '), 'BINDER-A', 'バインダー名');
+});
+
+/* ========== 編集・登録解除 ========== */
+
+await test('valuesFromCard: 台帳のカードをフォームの値に開く', () => {
+  const card = parse('collection.json').cards[0];
+  const values = valuesFromCard(card);
+  assertEqual(values.storageType, 'toploader', '収納先の種類');
+  assertEqual(values.storageName, '', 'バインダー以外の名前は空');
+  assertEqual(values.price, 12000, '台帳側の価格');
+  assertEqual(values.priceWatch, true, 'priceWatch');
+  assertEqual(values.features.join(','), 'patch', '特徴');
+});
+
+await test('applyCardEdit: id・登録日・価格履歴は持ち越す', () => {
+  const card = parse('collection.json').cards[0];
+  const edited = applyCardEdit(card, card.playerId, {
+    ...valuesFromCard(card), variation: 'Gold Prizm', tier: 'vault',
+  }, new Date(2026, 7, 20));
+
+  assertEqual(edited.id, card.id, 'カードID');
+  assertEqual(edited.addedAt, '2026-08-11', '登録日は変えない');
+  assertEqual(edited.priceHistory.length, 2, '履歴は持ち越す');
+  assertEqual(edited.variation, 'Gold Prizm', '編集した項目');
+  assertEqual(Object.keys(edited).join(','), Object.keys(card).join(','), 'キーの順序');
+});
+
+await test('applyCardEdit: 価格を変えなければ出所と確認日を残す', () => {
+  const card = parse('collection.json').cards[0];
+  const same = applyCardEdit(card, card.playerId, valuesFromCard(card), new Date(2026, 7, 20));
+  assertEqual(JSON.stringify(same.price), JSON.stringify(card.price), '据え置き');
+
+  const changed = applyCardEdit(card, card.playerId, { ...valuesFromCard(card), price: 15000 }, new Date(2026, 7, 20));
+  assertEqual(JSON.stringify(changed.price),
+    '{"current":15000,"checkedAt":"2026-08-20","source":"手動"}', '入れ直したとき');
+
+  const cleared = applyCardEdit(card, card.playerId, { ...valuesFromCard(card), price: undefined });
+  assertEqual(cleared.price, null, '空欄にしたとき');
+});
+
+await test('applyCardEdit: 紐づけ先の選手を替えられる', () => {
+  const card = parse('collection.json').cards[0];
+  assertEqual(applyCardEdit(card, 'p-0002', valuesFromCard(card)).playerId, 'p-0002', 'playerId');
+});
+
+await test('replaceCard: 同じIDを置き換える。無ければ例外', () => {
+  const base = parse('collection.json');
+  const snapshot = JSON.stringify(base);
+  const edited = { ...base.cards[1], variation: 'Kaboom! Green' };
+  const next = replaceCard(base, edited, new Date(2026, 7, 20));
+
+  assertEqual(next.cards.length, 2, '枚数は変わらない');
+  assertEqual(next.cards[1].variation, 'Kaboom! Green', '置き換わった');
+  assertEqual(next.cards[0].id, base.cards[0].id, '順序は保つ');
+  assertEqual(JSON.stringify(base), snapshot, '入力を書き換えない');
+
+  let message = '';
+  try { replaceCard(base, { id: 'c-nope' }); } catch (error) { message = error.message; }
+  assert(message.includes('台帳にありません'), `文言が想定と違う: ${message}`);
+});
+
+await test('removeCard: カードだけ消し、選手レコードは残す（仕様§5）', () => {
+  const base = parse('collection.json');
+  const next = removeCard(base, 'c-20260812-m7q', new Date(2026, 7, 20));
+  assertEqual(next.cards.length, 1, 'カード枚数');
+  assertEqual(next.cards[0].id, 'c-20260811-k3f', '残ったカード');
+  assertEqual(next.players.length, 2, '選手は消さない');
+  assertEqual(base.cards.length, 2, '入力を書き換えない');
+
+  let message = '';
+  try { removeCard(base, 'c-nope'); } catch (error) { message = error.message; }
+  assert(message.includes('台帳にありません'), `文言が想定と違う: ${message}`);
+});
+
+await test('retypePlayer: 表記だけ差し替える。cowork欄には触らない', () => {
+  const player = parse('collection.json').players[0];
+  const next = retypePlayer(player, {
+    name: 'ベリンガム', nameEn: 'Jude Bellingham', nationality: 'イングランド', notes: 'メモ',
+  });
+  assertEqual(next.name, 'ベリンガム', '直した名前');
+  assertEqual(next.notes, 'メモ', '備考');
+  assertEqual(next.currentTeam, 'Real Madrid', 'currentTeamは元のまま');
+  assertEqual(next.status, 'active', 'statusは元のまま');
+  assertEqual(next.infoUpdatedAt, '2026-08-01', 'infoUpdatedAtは元のまま');
+});
+
+await test('retypePlayer: 変更がなければ null（無駄なコミットをしない）', () => {
+  const player = parse('collection.json').players[0];
+  assertEqual(retypePlayer(player, player), null, '同じ内容');
+});
+
+await test('replacePlayer / addPlayerToCollection', () => {
+  const base = parse('collection.json');
+  const retyped = retypePlayer(base.players[1], { ...base.players[1], name: 'みとま かおる' });
+  const next = replacePlayer(base, retyped, new Date(2026, 7, 20));
+  assertEqual(next.players[1].name, 'みとま かおる', '置き換わった');
+  assertEqual(next.cards.length, 2, 'カードはそのまま');
+
+  const added = addPlayerToCollection(base, buildPlayerRecord('p-0003', { name: '久保建英', nameEn: 'Takefusa Kubo' }));
+  assertEqual(added.players.length, 3, '選手を1人足す');
+  assertEqual(base.players.length, 2, '入力を書き換えない');
+});
+
+/* ========== 保存（PUT・楽観ロック） ========== */
+
+/** PUTの成功レスポンス。 */
+function putOk(sha) {
+  return { ok: true, status: 200, json: async () => ({ content: { sha } }) };
+}
+
+await test('putCollection: collection.json へPUTし、日本語がUTF-8で往復する', async () => {
+  const base = parse('collection.json');
+  let seen = null;
+  const restore = stubFetch((url, init) => {
+    seen = { url, init };
+    return putOk('sha-after');
+  });
+  let result;
+  try {
+    result = await putCollection(SETTINGS, base, 'sha-before', 'iphone: add c-20260812-abc');
+  } finally { restore(); }
+
+  assertEqual(seen.url,
+    'https://api.github.com/repos/tetsuf0605-rgb/soccer-cards-data/contents/collection.json', 'URL');
+  assertEqual(seen.init.method, 'PUT', 'メソッド');
+  const body = JSON.parse(seen.init.body);
+  assertEqual(body.sha, 'sha-before', '楽観ロックのsha');
+  assertEqual(body.message, 'iphone: add c-20260812-abc', 'コミットメッセージ');
+  const sent = decodeBase64Utf8(body.content);
+  assert(sent.includes('三笘薫'), '日本語が壊れている');
+  assertEqual(sent, stringifyCollection(base), '送った本文');
+  assertEqual(result.sha, 'sha-after', '返ってきたsha');
+});
+
+await test('putCollection: 失敗しても中身は送りっぱなしにせず日本語で知らせる', async () => {
+  for (const [status, needle] of [[401, 'PATが無効'], [403, 'Contents: Read and write'], [409, '競合']]) {
+    const restore = stubFetch(() => errorResponse(status));
+    let message = '';
+    try {
+      await putCollection(SETTINGS, parse('collection.json'), 'sha', 'iphone: add c-x');
+    } catch (error) { message = error.message; } finally { restore(); }
+    assert(message.includes(needle), `HTTP ${status} の文言に「${needle}」がない: ${message}`);
+  }
+});
+
+await test('commitCollection: 成功したら1回のPUTで終わる', async () => {
+  let puts = 0;
+  const restore = stubFetch((url, init) => {
+    if ((init.method ?? 'GET') === 'PUT') { puts += 1; return putOk('sha-1'); }
+    throw new Error('GETしてはいけない');
+  });
+  let result;
+  try {
+    result = await commitCollection(SETTINGS, { json: parse('collection.json'), sha: 'sha-0' }, (json) => ({
+      json: { ...json, cards: [...json.cards, { id: 'c-new' }] },
+      message: 'iphone: add c-new',
+      result: 'ok',
+    }));
+  } finally { restore(); }
+
+  assertEqual(puts, 1, 'PUT回数');
+  assertEqual(result.retried, false, 'retried');
+  assertEqual(result.sha, 'sha-1', '新しいsha');
+  assertEqual(result.json.cards.length, 3, '書き込んだ中身');
+});
+
+await test('commitCollection: 409なら再GETして変更を当て直し、もう一度PUTする', async () => {
+  // 他端末が1枚追加した状態を「取り直し」で返す
+  const fresh = parse('collection.json');
+  fresh.cards.push({ id: 'c-20260812-oth' });
+
+  let puts = 0;
+  let gets = 0;
+  let lastBody = null;
+  const restore = stubFetch((url, init) => {
+    if ((init.method ?? 'GET') === 'GET') {
+      gets += 1;
+      return {
+        ok: true, status: 200,
+        json: async () => ({ sha: 'sha-fresh', size: 1, content: encodeBase64Utf8(JSON.stringify(fresh)) }),
+      };
+    }
+    puts += 1;
+    lastBody = JSON.parse(init.body);
+    return puts === 1 ? errorResponse(409) : putOk('sha-2');
+  });
+
+  let result;
+  try {
+    result = await commitCollection(SETTINGS, { json: parse('collection.json'), sha: 'sha-stale' }, (json) => ({
+      json: { ...json, cards: [...json.cards, { id: 'c-mine' }] },
+      message: 'iphone: add c-mine',
+      result: json.cards.length,
+    }));
+  } finally { restore(); }
+
+  assertEqual(puts, 2, 'PUT回数');
+  assertEqual(gets, 1, '再GET回数');
+  assertEqual(result.retried, true, 'retried');
+  assertEqual(lastBody.sha, 'sha-fresh', '再PUTのshaは取り直したもの');
+  assertEqual(result.result, 3, 'applyは取り直した中身に対して当たる');
+  // 他端末の1枚を消さずに自分の1枚を足せている
+  const ids = result.json.cards.map((c) => c.id);
+  assert(ids.includes('c-20260812-oth') && ids.includes('c-mine'), `どちらかが消えた: ${ids}`);
+});
+
+await test('commitCollection: 2回目も409なら諦めてユーザーに返す', async () => {
+  const restore = stubFetch((url, init) => (
+    (init.method ?? 'GET') === 'GET'
+      ? okResponse('collection.json')
+      : errorResponse(409)
+  ));
+  let message = '';
+  try {
+    await commitCollection(SETTINGS, { json: parse('collection.json'), sha: 'sha' }, (json) => ({
+      json, message: 'iphone: add c-x',
+    }));
+  } catch (error) { message = error.message; } finally { restore(); }
+  assert(message.includes('再読込'), `文言が想定と違う: ${message}`);
 });
 
 /* ========== 実データを実際に描画して目視確認 ========== */

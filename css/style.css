@@ -162,7 +162,9 @@ body {
 .field__row > input { flex: 1; min-width: 0; }
 
 input[type="text"],
-input[type="password"] {
+input[type="password"],
+input[type="number"],
+textarea {
   width: 100%;
   min-height: var(--tap);
   padding: 10px 12px;
@@ -174,7 +176,12 @@ input[type="password"] {
   font-size: 16px;
   font-family: inherit;
 }
-input:focus-visible {
+textarea {
+  line-height: 1.5;
+  resize: vertical;
+}
+input:focus-visible,
+textarea:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 1px;
 }
@@ -422,6 +429,106 @@ input[type="search"]:focus-visible {
   font-variant-numeric: tabular-nums;
 }
 .history__source { color: var(--text-dim); font-size: 12px; }
+
+/* ===== 確認パネル（window.confirm の代わり） ===== */
+
+.confirm {
+  margin: 10px 0 14px;
+  padding: 12px 14px;
+  background: var(--surface);
+  border: 1px solid color-mix(in srgb, var(--danger) 45%, transparent);
+  border-radius: var(--radius);
+}
+.confirm__text { margin: 0; font-size: 15px; font-weight: 600; }
+.confirm__note { margin: 6px 0 0; font-size: 13px; color: var(--text-dim); }
+.confirm .actions { margin: 12px 0 0; }
+/* パネルの中では「はい」を塗って主役にする */
+.confirm .btn--danger {
+  flex: 1;
+  color: var(--accent-text);
+  background: var(--danger);
+  border-color: transparent;
+}
+
+/* ===== 取り込みフォーム ===== */
+
+/* .field > label と同じ見た目の、labelにできない見出し（特徴のチェック群など） */
+.field__label {
+  display: block;
+  margin-bottom: 6px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-dim);
+}
+
+.check {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: var(--tap);
+  font-size: 15px;
+}
+.check input[type="checkbox"] {
+  flex: none;
+  width: 22px;
+  height: 22px;
+  accent-color: var(--accent);
+}
+
+.progress {
+  margin: 0 0 10px;
+  font-size: 14px;
+  font-weight: 700;
+}
+
+/* needsCheck（判定側が自信なしと言った項目）を目立たせる */
+.field--check {
+  margin-left: -12px;
+  margin-right: -12px;
+  padding: 10px 12px;
+  background: color-mix(in srgb, var(--warn) 9%, transparent);
+  border-left: 3px solid var(--warn);
+  border-radius: 8px;
+}
+.field--check > label:first-of-type::after,
+.field--check > .field__label::after {
+  content: ' 要確認';
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--warn);
+}
+
+/* 選手の候補（既存に紐づけ / 新規作成） */
+.choices {
+  display: grid;
+  gap: 8px;
+  margin-bottom: 18px;
+}
+
+.choice {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: var(--tap);
+  padding: 10px 12px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+.choice input[type="radio"] {
+  flex: none;
+  width: 20px;
+  height: 20px;
+  accent-color: var(--accent);
+}
+.choice:has(input:checked) {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 10%, var(--surface));
+}
+
+.choice__body { display: grid; min-width: 0; }
+.choice__main { font-size: 15px; font-weight: 600; overflow-wrap: anywhere; }
+.choice__sub { font-size: 12px; color: var(--text-dim); overflow-wrap: anywhere; }
 
 /* ===== 取得状況 ===== */
 

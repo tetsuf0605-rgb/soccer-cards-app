@@ -23,6 +23,9 @@
 <header class="appbar">
   <h1 class="appbar__title">トレカ所持リスト</h1>
   <div class="appbar__actions">
+    <button type="button" id="btn-import" class="iconbtn" title="取り込み">
+      <span aria-hidden="true">＋</span><span class="sr-only">カードを取り込む</span>
+    </button>
     <button type="button" id="btn-reload" class="iconbtn" title="再読込">
       <span aria-hidden="true">↻</span><span class="sr-only">再読込</span>
     </button>
@@ -55,6 +58,192 @@
   <section id="view-detail" class="view" hidden>
     <button type="button" id="btn-back" class="btn btn--ghost btn--back">← 一覧へ</button>
     <div id="detail-body"></div>
+
+    <h2 class="section-title">このカードの操作</h2>
+    <div class="actions">
+      <button type="button" id="btn-edit" class="btn btn--primary">編集する</button>
+      <button type="button" id="btn-watch" class="btn">価格ウォッチ</button>
+    </div>
+    <div class="actions">
+      <button type="button" id="btn-delete" class="btn btn--danger">倉庫へ移動（登録解除）</button>
+    </div>
+    <div id="detail-confirm"></div>
+    <p id="detail-message" class="message" role="status" aria-live="polite"></p>
+  </section>
+
+  <!-- ===== 取り込み・編集（1つのフォームを両方で使う） ===== -->
+  <section id="view-form" class="view" hidden>
+    <button type="button" id="btn-form-back" class="btn btn--ghost btn--back">← 一覧へ</button>
+
+    <!-- 手順1: 判定JSONを貼り付ける -->
+    <div id="import-paste">
+      <h2 class="section-title">判定JSONの貼り付け</h2>
+      <p class="hint">
+        「カード判定」チャットが返したJSONを貼り付けます。コードブロックの記号（```）が
+        混ざっていても構いません。まとめ撮りの複数枚は1枚ずつ確認して保存します。
+      </p>
+      <div class="field">
+        <label class="sr-only" for="ig-json">判定JSON</label>
+        <textarea id="ig-json" rows="7" placeholder='{"schemaVersion": 1, "items": [ … ]}'
+                  autocapitalize="none" autocorrect="off" spellcheck="false"></textarea>
+      </div>
+      <div class="actions">
+        <button type="button" id="btn-import-read" class="btn btn--primary">読み込む</button>
+        <button type="button" id="btn-import-clip" class="btn btn--ghost">クリップボードから貼り付け</button>
+      </div>
+      <p id="import-paste-message" class="message" role="status" aria-live="polite"></p>
+    </div>
+
+    <!-- 手順2: 1枚ずつ確認して保存する（編集でも同じフォームを使う） -->
+    <form id="card-form" novalidate hidden>
+      <p id="form-progress" class="progress"></p>
+
+      <h2 class="section-title">選手</h2>
+      <p id="ig-player-read" class="hint"></p>
+      <div id="ig-player-choices" class="choices"></div>
+      <div class="field">
+        <label for="ig-player-search">ほかの登録済み選手から選ぶ</label>
+        <input id="ig-player-search" type="search" placeholder="選手名で絞り込み"
+               autocapitalize="none" autocorrect="off" spellcheck="false" autocomplete="off">
+      </div>
+
+      <div id="ig-player-fields">
+        <p id="ig-player-fields-note" class="hint"></p>
+        <div class="field" data-check="name">
+          <label for="ig-p-name">名前（カナ）</label>
+          <input id="ig-p-name" type="text" autocomplete="off">
+        </div>
+        <div class="field" data-check="nameEn">
+          <label for="ig-p-nameen">カード表記（nameEn）</label>
+          <input id="ig-p-nameen" type="text" autocapitalize="words" autocomplete="off">
+        </div>
+        <div class="field" data-check="nationality">
+          <label for="ig-p-nationality">国籍（不明なら「不明」）</label>
+          <input id="ig-p-nationality" type="text" list="list-nationality" autocomplete="off">
+        </div>
+        <div class="field">
+          <label for="ig-p-notes">選手の備考</label>
+          <input id="ig-p-notes" type="text" autocomplete="off">
+        </div>
+        <div id="ig-player-provisional">
+          <div class="field">
+            <label for="ig-p-team">現所属チーム（任意）</label>
+            <input id="ig-p-team" type="text" autocomplete="off">
+          </div>
+          <div class="field">
+            <label for="ig-p-status">引退状況</label>
+            <select id="ig-p-status">
+              <option value="active">現役</option>
+              <option value="retired">引退</option>
+              <option value="unknown">不明</option>
+            </select>
+          </div>
+          <p class="hint">
+            現所属チーム・引退状況は登録時点の暫定値です（以後は cowork が players_info.json で更新します）。
+          </p>
+        </div>
+      </div>
+
+      <h2 class="section-title">カード</h2>
+      <div class="field" data-check="maker">
+        <label for="ig-maker">メーカー</label>
+        <input id="ig-maker" type="text" list="list-maker" autocomplete="off">
+      </div>
+      <div class="field" data-check="series">
+        <label for="ig-series">シリーズ</label>
+        <input id="ig-series" type="text" list="list-series" autocomplete="off">
+      </div>
+      <div class="field" data-check="variation">
+        <label for="ig-variation">バリエーション（既定 Base）</label>
+        <input id="ig-variation" type="text" list="list-variation" autocomplete="off">
+      </div>
+      <div class="field" data-check="teamOnCard">
+        <label for="ig-team">プリント時チーム</label>
+        <input id="ig-team" type="text" list="list-team" autocomplete="off">
+      </div>
+      <div class="field" data-check="season">
+        <label for="ig-season">シーズン（任意）</label>
+        <input id="ig-season" type="text" list="list-season" autocomplete="off">
+      </div>
+      <div class="field" data-check="cardNo">
+        <label for="ig-cardno">カード番号（任意）</label>
+        <input id="ig-cardno" type="text" autocomplete="off">
+      </div>
+
+      <div class="field" data-check="serial">
+        <label for="ig-serial">シリアル（例 23/99。無ければ空欄）</label>
+        <input id="ig-serial" type="text" inputmode="numeric" autocomplete="off">
+        <label class="check" id="ig-serial-ok-row">
+          <input type="checkbox" id="ig-serial-ok">
+          <span>シリアルが実物と一致することを確認した</span>
+        </label>
+        <p class="hint">シリアルを入力した場合、この確認なしでは保存できません。</p>
+      </div>
+
+      <div class="field" data-check="features">
+        <span class="field__label">特徴</span>
+        <label class="check"><input type="checkbox" id="ig-feat-auto"><span>サイン（auto）</span></label>
+        <label class="check"><input type="checkbox" id="ig-feat-patch"><span>パッチ（patch）</span></label>
+        <label class="check"><input type="checkbox" id="ig-feat-rookie"><span>ルーキー（rookie）</span></label>
+        <input id="ig-feat-other" type="text" placeholder="その他（カンマ区切り）" autocomplete="off">
+      </div>
+
+      <div class="field">
+        <label for="ig-notes">備考（裏面情報など）</label>
+        <textarea id="ig-notes" rows="3"></textarea>
+      </div>
+
+      <h2 class="section-title">分類・収納</h2>
+      <div class="field">
+        <label for="ig-tier">層</label>
+        <select id="ig-tier">
+          <option value="gallery">ギャラリー</option>
+          <option value="vault">金庫</option>
+        </select>
+      </div>
+      <div class="field">
+        <label for="ig-storage-type">収納先</label>
+        <select id="ig-storage-type">
+          <option value="binder">バインダー</option>
+          <option value="toploader">トップローダー</option>
+          <option value="magnetic">マグネットローダー</option>
+        </select>
+      </div>
+      <div class="field" id="ig-storage-name-field">
+        <label for="ig-storage-name">バインダー名</label>
+        <input id="ig-storage-name" type="text" list="list-binder" autocomplete="off">
+      </div>
+      <div class="field">
+        <label class="check"><input type="checkbox" id="ig-pricewatch"><span>価格ウォッチの対象にする</span></label>
+        <p class="hint">ONにすると cowork の価格チェックが価格と履歴を更新します。</p>
+      </div>
+
+      <h2 class="section-title">価格（任意）</h2>
+      <div class="field">
+        <label for="ig-price">現在価格（円）</label>
+        <input id="ig-price" type="number" inputmode="numeric" min="0" step="1" autocomplete="off">
+        <p class="hint">価格を入れ直すと 情報源「手動」・確認日「本日」で保存します。空欄なら価格なしになります。</p>
+        <p id="ig-price-note" class="hint hint--warn" hidden></p>
+      </div>
+
+      <div class="actions">
+        <button type="submit" id="btn-form-save" class="btn btn--primary">保存する</button>
+        <button type="button" id="btn-form-skip" class="btn btn--ghost">この1枚を飛ばす</button>
+      </div>
+      <div class="actions">
+        <button type="button" id="btn-form-cancel" class="btn btn--danger">取り込みを中止</button>
+      </div>
+      <div id="form-confirm"></div>
+      <p id="form-message" class="message" role="status" aria-live="polite"></p>
+    </form>
+
+    <datalist id="list-maker"></datalist>
+    <datalist id="list-series"></datalist>
+    <datalist id="list-variation"></datalist>
+    <datalist id="list-team"></datalist>
+    <datalist id="list-season"></datalist>
+    <datalist id="list-binder"></datalist>
+    <datalist id="list-nationality"></datalist>
   </section>
 
   <!-- ===== 設定 ===== -->
@@ -97,6 +286,7 @@
         <button type="button" id="btn-clear" class="btn btn--danger">設定を消去</button>
       </div>
 
+      <div id="settings-confirm"></div>
       <p id="settings-message" class="message" role="status" aria-live="polite"></p>
     </form>
 
@@ -107,9 +297,11 @@
 
     <h2 class="section-title">このアプリについて</h2>
     <p class="hint">
-      フェーズ1。一覧は collection.json に prices.json / players_info.json を
-      重ねた（オーバーレイ優先）結果を表示しています。
-      取り込み・編集・エクスポートはフェーズ2以降で追加します。
+      フェーズ3。一覧は collection.json に prices.json / players_info.json を
+      重ねた（オーバーレイ優先）結果です。取り込みは右上の「＋」から、
+      編集・価格ウォッチ切替・「倉庫へ移動（登録解除）」は各カードの詳細から。
+      書き込むのは collection.json だけで、1操作ごとに1コミットします。
+      エクスポートとオフライン閲覧はフェーズ4で追加します。
     </p>
   </section>
 
