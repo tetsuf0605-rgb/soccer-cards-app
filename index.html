@@ -36,8 +36,25 @@
 
   <!-- ===== 一覧 ===== -->
   <section id="view-list" class="view">
+    <div class="toolbar">
+      <label class="sr-only" for="input-search">選手名で検索</label>
+      <input id="input-search" type="search" placeholder="選手名で検索"
+             autocapitalize="none" autocorrect="off" spellcheck="false"
+             enterkeyhint="search" autocomplete="off">
+      <div class="toolbar__row">
+        <label class="sr-only" for="select-sort">並び替え</label>
+        <select id="select-sort"></select>
+        <button type="button" id="btn-sort-dir" class="btn btn--ghost">昇順</button>
+      </div>
+    </div>
     <p id="list-message" class="message" role="status" aria-live="polite"></p>
     <ul id="card-list" class="cards"></ul>
+  </section>
+
+  <!-- ===== 詳細 ===== -->
+  <section id="view-detail" class="view" hidden>
+    <button type="button" id="btn-back" class="btn btn--ghost btn--back">← 一覧へ</button>
+    <div id="detail-body"></div>
   </section>
 
   <!-- ===== 設定 ===== -->
@@ -90,8 +107,9 @@
 
     <h2 class="section-title">このアプリについて</h2>
     <p class="hint">
-      フェーズ0（骨格）。一覧は collection.json をそのまま表示しています。
-      オーバーレイ（prices.json / players_info.json）のマージ表示・ソート・検索はフェーズ1で追加します。
+      フェーズ1。一覧は collection.json に prices.json / players_info.json を
+      重ねた（オーバーレイ優先）結果を表示しています。
+      取り込み・編集・エクスポートはフェーズ2以降で追加します。
     </p>
   </section>
 

@@ -31,16 +31,21 @@
   <p id="summary">実行中…</p>
   <div id="results"></div>
 
-  <h2 class="section-title">一覧の描画（実データ）</h2>
+  <h2 class="section-title">一覧の描画（マージ済み実データ）</h2>
   <p id="render-message" class="message"></p>
   <ul id="render-target" class="cards"></ul>
+
+  <h2 class="section-title">詳細の描画</h2>
+  <div id="detail-target"></div>
 </main>
 
 <script type="module">
 import { FIXTURES } from './fixtures.js';
 import { encodeBase64Utf8, decodeBase64Utf8 } from '../js/base64.js';
 import { fetchAllFiles, getJsonFile, DATA_FILES, WRITABLE_PATH } from '../js/github.js';
-import { buildCardList, formatPrice, formatStorage } from '../js/render.js';
+import { buildCardList, buildDetail, formatPrice, formatStorage } from '../js/render.js';
+import { mergeCollection } from '../js/merge.js';
+import { buildRows, sortRows, filterRows, foldText, SORT_OPTIONS } from '../js/query.js';
 
 const results = document.getElementById('results');
 let passed = 0;
@@ -234,6 +239,175 @@ await test('書き込み可能パスは collection.json だけ', () => {
   assertEqual(writers.length, 1, '書き込み対象の数');
 });
 
+/* ========== オーバーレイマージ ========== */
+
+const parse = (path) => JSON.parse(decodeBase64Utf8(FIXTURES[path].content));
+
+await test('マージ: prices.json が collection.json の価格に優先する', () => {
+  const base = parse('collection.json');
+  const { merged } = mergeCollection(base, parse('prices.json'), parse('players_info.json'));
+  const card = merged.cards.find((c) => c.id === 'c-20260811-k3f');
+
+  assertEqual(base.cards[0].price.current, 12000, '前提: 台帳側は12000');
+  assertEqual(card.price.current, 13000, 'マージ後の現在価格');
+  assertEqual(card.price.checkedAt, '2026-08-12', 'マージ後の確認日');
+  assertEqual(card.priceHistory.length, 3, '履歴の件数');
+  assertEqual(card.priceHistory[2].price, 13000, '履歴の末尾');
+});
+
+await test('マージ: players_info.json が選手情報に優先する', () => {
+  const base = parse('collection.json');
+  const { merged } = mergeCollection(base, parse('prices.json'), parse('players_info.json'));
+  const player = merged.players.find((p) => p.id === 'p-0001');
+
+  assertEqual(base.players[0].infoUpdatedAt, '2026-08-01', '前提: 台帳側は08-01');
+  assertEqual(player.infoUpdatedAt, '2026-08-12', 'マージ後の情報更新日');
+  assertEqual(player.currentTeam, 'Real Madrid', '所属');
+});
+
+await test('マージ: 入力オブジェクトを書き換えない', () => {
+  const base = parse('collection.json');
+  const snapshot = JSON.stringify(base);
+  mergeCollection(base, parse('prices.json'), parse('players_info.json'));
+  assertEqual(JSON.stringify(base), snapshot, 'collection.jsonが変化した');
+});
+
+await test('マージ: オーバーレイが無くても台帳をそのまま返す', () => {
+  const base = parse('collection.json');
+  const { merged, sources } = mergeCollection(base, null, null);
+  assertEqual(merged.cards[0].price.current, 12000, '台帳の価格');
+  assertEqual(merged.cards[0].priceHistory.length, 2, '台帳の履歴');
+  assertEqual(sources.cards.size, 0, 'オーバーレイ由来は0件');
+  assertEqual(sources.players.size, 0, 'オーバーレイ由来は0件');
+});
+
+await test('マージ: 部分的なオーバーレイは他フィールドを壊さない', () => {
+  const base = parse('collection.json');
+  // currentTeam だけ持つエントリ
+  const partial = { players: { 'p-0001': { currentTeam: 'Manchester City' } } };
+  const { merged } = mergeCollection(base, null, partial);
+  const player = merged.players.find((p) => p.id === 'p-0001');
+  assertEqual(player.currentTeam, 'Manchester City', '上書きされた項目');
+  assertEqual(player.status, 'active', '触られていない項目');
+  assertEqual(player.infoUpdatedAt, '2026-08-01', '触られていない項目');
+});
+
+await test('マージ: 孤児エントリ（存在しないID）は無視される', () => {
+  const base = parse('collection.json');
+  const orphan = { prices: { 'c-deleted-999': { current: 99999, history: [] } } };
+  const { merged, sources } = mergeCollection(base, orphan, null);
+  assertEqual(merged.cards.length, 2, 'カードが増えていない');
+  assertEqual(sources.cards.size, 0, 'オーバーレイ由来は0件');
+});
+
+await test('マージ結果はv1.2の形を保つ（余計なキーを足さない）', () => {
+  const base = parse('collection.json');
+  const { merged } = mergeCollection(base, parse('prices.json'), parse('players_info.json'));
+  assertEqual(Object.keys(merged).sort().join(','), Object.keys(base).sort().join(','), 'トップレベルのキー');
+  assertEqual(Object.keys(merged.cards[0]).sort().join(','),
+    Object.keys(base.cards[0]).sort().join(','), 'cardsのキー');
+});
+
+/* ========== ソート ========== */
+
+/** テスト用の行を作る。 */
+function row(card, player) {
+  return { card: { id: 'c-' + Math.random().toString(36).slice(2, 5), ...card }, player: player ?? null };
+}
+
+await test('ソート項目はスキーマ仕様§1の8項目そろっている', () => {
+  assertEqual(SORT_OPTIONS.length, 8, '項目数');
+  assertEqual(SORT_OPTIONS.map((o) => o.id).join(','),
+    'name,nationality,price,teamOnCard,currentTeam,status,series,variation', '項目のid');
+});
+
+await test('ソート: 現在の価格（昇順・降順）', () => {
+  const rows = [
+    row({ price: { current: 5000 } }),
+    row({ price: { current: 20000 } }),
+    row({ price: { current: 12000 } }),
+  ];
+  assertEqual(sortRows(rows, 'price', false).map((r) => r.card.price.current).join(','),
+    '5000,12000,20000', '昇順');
+  assertEqual(sortRows(rows, 'price', true).map((r) => r.card.price.current).join(','),
+    '20000,12000,5000', '降順');
+});
+
+await test('ソート: 値なしは昇順でも降順でも末尾', () => {
+  const rows = [
+    row({ price: null }),
+    row({ price: { current: 8000 } }),
+    row({ price: { current: 3000 } }),
+  ];
+  const asc = sortRows(rows, 'price', false);
+  const desc = sortRows(rows, 'price', true);
+  assertEqual(asc[asc.length - 1].card.price, null, '昇順で末尾が価格なし');
+  assertEqual(desc[desc.length - 1].card.price, null, '降順で末尾が価格なし');
+});
+
+await test('ソート: 引退状況は 現役 → 引退 → 不明', () => {
+  const rows = [
+    row({}, { name: 'C', status: 'unknown' }),
+    row({}, { name: 'B', status: 'retired' }),
+    row({}, { name: 'A', status: 'active' }),
+  ];
+  assertEqual(sortRows(rows, 'status', false).map((r) => r.player.status).join(','),
+    'active,retired,unknown', '並び順');
+});
+
+await test('ソート: playerId経由で結合した選手キーで並ぶ', () => {
+  const base = parse('collection.json');
+  const { merged } = mergeCollection(base, null, null);
+  const rows = buildRows(merged);
+  // 三笘薫 / ジュード・ベリンガム を現所属チームで並べる
+  const byTeam = sortRows(rows, 'currentTeam', false).map((r) => r.player.currentTeam);
+  assertEqual(byTeam.join(' | '), 'Brighton & Hove Albion | Real Madrid', '現所属チーム昇順');
+  const byNationality = sortRows(rows, 'nationality', false).map((r) => r.player.nationality);
+  assertEqual(byNationality.join(' | '), 'イングランド | 日本', '国籍昇順');
+});
+
+await test('ソート: シリーズは数字を数として扱う', () => {
+  const rows = [row({ series: 'Prizm 10' }), row({ series: 'Prizm 2' })];
+  assertEqual(sortRows(rows, 'series', false).map((r) => r.card.series).join(','),
+    'Prizm 2,Prizm 10', '自然順');
+});
+
+await test('ソート: 元の配列を書き換えない', () => {
+  const rows = [row({ price: { current: 3 } }), row({ price: { current: 1 } })];
+  const before = rows.map((r) => r.card.price.current).join(',');
+  sortRows(rows, 'price', false);
+  assertEqual(rows.map((r) => r.card.price.current).join(','), before, '入力が並び替わってしまった');
+});
+
+/* ========== 検索 ========== */
+
+await test('検索: 正規化（大文字小文字・全角・かな）', () => {
+  assertEqual(foldText('ＢＥＬＬＩＮＧＨＡＭ'), 'bellingham', '全角英字＋小文字化');
+  assertEqual(foldText('べりんがむ'), 'ベリンガム', 'ひらがな→カタカナ');
+});
+
+await test('検索: nameEn は大文字小文字を問わない', () => {
+  const { merged } = mergeCollection(parse('collection.json'), null, null);
+  const rows = buildRows(merged);
+  assertEqual(filterRows(rows, 'bellingham').length, 1, '小文字で検索');
+  assertEqual(filterRows(rows, 'MITOMA').length, 1, '大文字で検索');
+});
+
+await test('検索: かな入力でカタカナ名に当たる', () => {
+  const { merged } = mergeCollection(parse('collection.json'), null, null);
+  const rows = buildRows(merged);
+  assertEqual(filterRows(rows, 'べりんがむ').length, 1, 'ひらがなで検索');
+  assertEqual(filterRows(rows, '三笘').length, 1, '漢字で検索');
+});
+
+await test('検索: 空文字は全件、一致なしは0件', () => {
+  const { merged } = mergeCollection(parse('collection.json'), null, null);
+  const rows = buildRows(merged);
+  assertEqual(filterRows(rows, '').length, 2, '空文字');
+  assertEqual(filterRows(rows, '   ').length, 2, '空白のみ');
+  assertEqual(filterRows(rows, 'ロナウド').length, 0, '一致なし');
+});
+
 /* ========== 表示 ========== */
 
 await test('formatPrice / formatStorage', () => {
@@ -244,27 +418,56 @@ await test('formatPrice / formatStorage', () => {
   assertEqual(formatStorage({ type: 'toploader', name: null }), 'トップローダー', 'トップローダー');
 });
 
-await test('buildCardList: サンプル2枚 / 選手2人', () => {
-  const json = JSON.parse(decodeBase64Utf8(FIXTURES['collection.json'].content));
-  const { nodes, cardCount, playerCount } = buildCardList(json);
-  assertEqual(cardCount, 2, 'カード枚数');
-  assertEqual(playerCount, 2, '選手数');
+await test('buildCardList: 行の数だけノードを作りcardIdを持つ', () => {
+  const { merged } = mergeCollection(parse('collection.json'), null, null);
+  const nodes = buildCardList(buildRows(merged));
   assertEqual(nodes.length, 2, 'ノード数');
   assert(nodes[0].textContent.includes('ジュード・ベリンガム'), '1枚目に選手名がない');
   assert(nodes[1].textContent.includes('BINDER-A'), '2枚目に収納先がない');
+  assertEqual(nodes[0].querySelector('.card').dataset.cardId, 'c-20260811-k3f', 'data-card-id');
 });
 
 await test('選手データが無いカードでも落ちない', () => {
-  const { nodes } = buildCardList({ players: [], cards: [{ id: 'c-x', playerId: 'p-9999', tier: 'gallery' }] });
+  const nodes = buildCardList([{ card: { id: 'c-x', tier: 'gallery' }, player: null }]);
   assert(nodes[0].textContent.includes('選手データなし'), 'フォールバック表示が出ていない');
+});
+
+await test('詳細: 価格履歴と、オーバーレイ由来の注記が出る', () => {
+  const { merged, sources } = mergeCollection(
+    parse('collection.json'), parse('prices.json'), parse('players_info.json'));
+  const rows = buildRows(merged);
+  const target = rows.find((r) => r.card.id === 'c-20260811-k3f');
+  const node = buildDetail(target, sources);
+  const text = node.textContent;
+
+  assert(text.includes('¥13,000'), 'マージ後の価格が出ていない');
+  assert(text.includes('価格履歴（3件）'), '履歴の件数が違う');
+  assert(text.includes('prices.json'), '価格のオーバーレイ注記がない');
+  assert(text.includes('players_info.json'), '選手情報のオーバーレイ注記がない');
+  assert(text.includes('パッチ'), 'featuresが日本語化されていない');
+  assert(text.includes('現役'), 'statusが日本語化されていない');
+  // 履歴は新しいものが上
+  const dates = [...node.querySelectorAll('.history__date')].map((n) => n.textContent);
+  assertEqual(dates.join(','), '2026-08-12,2026-08-10,2026-07-10', '履歴の並び');
+});
+
+await test('詳細: オーバーレイが無ければ注記も出ない', () => {
+  const { merged, sources } = mergeCollection(parse('collection.json'), null, null);
+  const rows = buildRows(merged);
+  const node = buildDetail(rows[0], sources);
+  assert(!node.textContent.includes('prices.json'), '注記が出てしまっている');
 });
 
 /* ========== 実データを実際に描画して目視確認 ========== */
 
-const json = JSON.parse(decodeBase64Utf8(FIXTURES['collection.json'].content));
-const { nodes, cardCount, playerCount } = buildCardList(json);
-document.getElementById('render-target').replaceChildren(...nodes);
-document.getElementById('render-message').textContent = `${cardCount}枚 / 選手${playerCount}人`;
+const { merged, sources } = mergeCollection(
+  parse('collection.json'), parse('prices.json'), parse('players_info.json'));
+const rows = sortRows(buildRows(merged), 'name', false);
+document.getElementById('render-target').replaceChildren(...buildCardList(rows));
+document.getElementById('render-message').textContent =
+  `${rows.length}枚（マージ済み。1枚目の価格が ¥13,000 ならオーバーレイが効いている）`;
+document.getElementById('detail-target').replaceChildren(
+  buildDetail(rows.find((r) => r.card.id === 'c-20260811-k3f'), sources));
 
 /* ========== 集計 ========== */
 
