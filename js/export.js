@@ -26,8 +26,17 @@ const MIME = 'application/json';
  */
 export function buildExport(collection, overlays, date = new Date()) {
   const { merged } = mergeCollection(collection, overlays?.prices ?? null, overlays?.playersInfo ?? null);
+
+  // 推定価格は表示のためにマージで行へ載せているが、collection.json の
+  // カードには無い項目なので書き出さない（スキーマ仕様 §9-7。完全形を保つ）
+  const cards = merged.cards.map((card) => {
+    if (!('estimate' in card)) return card;
+    const { estimate, ...rest } = card;
+    return rest;
+  });
+
   // exportedAt は元から先頭付近にあるキーなので、スプレッドで値だけ差し替える（並びは変わらない）
-  const json = { ...merged, exportedAt: toIsoTimestamp(date) };
+  const json = { ...merged, cards, exportedAt: toIsoTimestamp(date) };
 
   return {
     filename: `collection-${toIsoDate(date)}.json`,

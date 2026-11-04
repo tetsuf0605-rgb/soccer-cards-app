@@ -34,6 +34,28 @@ export function buildRows(merged, career) {
 const STATUS_RANK = { active: 0, retired: 1, unknown: 2 };
 
 /**
+ * そのカードの「いくらか」を1つに決める（スキーマ仕様 §9-7）。
+ *
+ * 実測（prices.json の current）があればそれ。無ければ推定の value。
+ * どちらも無ければ null。source を見れば、表示側が実測と推定を描き分けられる。
+ *
+ * 信頼度「低」は幅（low〜high）でしか見せないが、並べ替えには value を使う
+ * （幅のまま並べる方法が無く、value は low と high の間にあるため）。
+ *
+ * @param {object} card マージ済みのカード
+ * @returns {{source: 'measured'|'estimate'|'none', value: number|null}}
+ */
+export function effectivePrice(card) {
+  if (typeof card?.price?.current === 'number') {
+    return { source: 'measured', value: card.price.current };
+  }
+  if (typeof card?.estimate?.value === 'number') {
+    return { source: 'estimate', value: card.estimate.value };
+  }
+  return { source: 'none', value: null };
+}
+
+/**
  * birthDate（YYYY-MM-DD）から満年齢を出す（スキーマ仕様 §1「年齢はデータに持たない」）。
  * 読めない・未設定は null（一覧では「—」、ソートでは末尾）。
  *
@@ -67,7 +89,15 @@ export const SORT_OPTIONS = [
   { id: 'name', label: '名前', value: (row) => row.player?.name },
   { id: 'nationality', label: '国籍', value: (row) => row.player?.nationality },
   { id: 'age', label: '年齢', numeric: true, value: (row) => ageFromBirthDate(row.player?.birthDate) },
-  { id: 'price', label: '現在の価格', numeric: true, defaultDesc: true, value: (row) => row.card.price?.current },
+  {
+    id: 'price',
+    label: '現在の価格',
+    numeric: true,
+    defaultDesc: true,
+    // 実測が無いカードは推定で並べる（スキーマ仕様 §9-7）。どちらで並んでいるかは
+    // 行の「推定」表示で分かる
+    value: (row) => effectivePrice(row.card).value,
+  },
   { id: 'teamOnCard', label: 'プリント時チーム', value: (row) => row.card.teamOnCard },
   { id: 'currentTeam', label: '現所属チーム', value: (row) => row.player?.currentTeam },
   {

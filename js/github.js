@@ -33,6 +33,16 @@ export const REF_DIRS = Object.freeze({
 /** PWAが書き込んでよいパス。PUTの入口でガードに使う（保存同期方式仕様 §4）。 */
 export const WRITABLE_PATHS = Object.freeze([DATA_FILES.collection, REF_FILES.targets]);
 
+/** checklists/{productKey}.json のパス。中身は製品を開いたときだけ取る（同 §4）。 */
+export function checklistPath(productKey) {
+  return `${REF_DIRS.checklists}/${productKey}.json`;
+}
+
+/** gb/{breakId}.json のパス。 */
+export function gbPath(breakId) {
+  return `${REF_DIRS.gb}/${breakId}.json`;
+}
+
 /** 以前からある別名（書き込みの既定先）。 */
 export const WRITABLE_PATH = DATA_FILES.collection;
 

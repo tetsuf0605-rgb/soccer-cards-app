@@ -78,6 +78,23 @@ body {
   font-size: 17px;
   font-weight: 700;
   letter-spacing: .02em;
+  /* ボタンが5つ並ぶので、狭い画面では折り返さずに詰める */
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+@media (max-width: 430px) {
+  .appbar {
+    gap: 4px;
+    padding-left: calc(10px + env(safe-area-inset-left));
+    padding-right: calc(10px + env(safe-area-inset-right));
+  }
+  .appbar__title { font-size: 15px; letter-spacing: 0; }
+  .appbar__actions { gap: 2px; }
+  /* 高さ44pxは保ったまま横だけ詰める（タップはしやすいまま） */
+  .iconbtn { min-width: 38px; font-size: 17px; }
 }
 
 .appbar__actions { display: flex; gap: 6px; }
@@ -287,6 +304,8 @@ textarea:focus-visible {
   font-variant-numeric: tabular-nums;
 }
 .card__price--none { font-weight: 400; font-size: 14px; color: var(--text-dim); }
+/* 推定は実測より一段弱く見せる（太さ・大きさ・色で「確かさ」の差を出す） */
+.card__price--estimate { font-weight: 600; font-size: 15px; color: var(--text-dim); }
 
 .badges {
   display: flex;
@@ -413,6 +432,20 @@ input[type="search"]:focus-visible {
   color: var(--text-dim);
 }
 .overlay-note::before { content: '↻ '; }
+
+/* 推定価格の根拠と但し書き（スキーマ仕様 §9-7） */
+.notes--basis {
+  font-size: 13px;
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+}
+
+.estimate-note {
+  margin: 8px 0 0;
+  font-size: 12px;
+  color: var(--text-dim);
+}
+.estimate-note::before { content: '※ '; }
 
 .history {
   list-style: none;
@@ -805,4 +838,216 @@ input[type="search"]:focus-visible {
 :root.has-team-theme .filters .hint {
   color: var(--text);
   font-weight: 600;
+}
+
+/* ===== 製品・GBの一覧（スキーマ仕様 §9-3・§9-4） ===== */
+
+.library {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 8px;
+}
+
+.library__item {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  width: 100%;
+  min-height: var(--tap);
+  padding: 12px 14px;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  cursor: pointer;
+}
+.library__item:active { background: var(--surface-2); }
+.library__item:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+.library__key {
+  font-size: 14px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.library__meta {
+  font-size: 12px;
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+}
+
+.segmented--wide { width: 100%; margin-bottom: 12px; }
+.segmented--wide .segmented__item { flex: 1; min-height: var(--tap); font-size: 14px; }
+
+/* 出典・パラレル一覧 */
+.sources {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 4px;
+  font-size: 13px;
+}
+.sources a { color: var(--accent); overflow-wrap: anywhere; }
+
+.variations {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 1px;
+  background: var(--border);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  overflow: hidden;
+}
+
+.variations__item {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 8px 12px;
+  font-size: 14px;
+  background: var(--surface);
+}
+.variations__meta { color: var(--text-dim); font-variant-numeric: tabular-nums; }
+
+/* ===== 所持照合（スキーマ仕様 §10-2） ===== */
+
+.badge--status { font-weight: 700; }
+.badge--owned {
+  color: var(--accent-text);
+  background: var(--accent);
+  border-color: var(--accent);
+}
+.badge--otherParallel {
+  color: var(--warn);
+  border-color: var(--warn);
+}
+.badge--candidate {
+  color: var(--warn);
+  border-color: var(--border);
+}
+.badge--missing { color: var(--text-dim); }
+.badge--unknown { color: var(--text-dim); border-style: dashed; }
+
+.checklist {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 8px;
+}
+
+.cl-row {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+
+.cl-row__head {
+  display: block;
+  width: 100%;
+  padding: 12px 14px;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+}
+.cl-row__head:active { background: var(--surface-2); }
+.cl-row__head:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.cl-row__head[aria-expanded="true"] { background: var(--surface-2); }
+
+.cl-row__top {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 6px 8px;
+}
+.cl-row__no {
+  font-size: 13px;
+  font-weight: 700;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+.cl-row__name { font-size: 15px; font-weight: 700; overflow-wrap: anywhere; }
+
+.cl-row__meta {
+  margin: 6px 0 0;
+  font-size: 13px;
+  color: var(--text-dim);
+  overflow-wrap: anywhere;
+}
+.cl-row__warn {
+  margin: 6px 0 0;
+  font-size: 13px;
+  color: var(--warn);
+}
+
+.cl-row__body {
+  padding: 4px 14px 12px;
+  border-top: 1px solid var(--border);
+}
+
+.cl-par {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px 8px;
+  padding: 8px 0;
+}
+.cl-par + .cl-par { border-top: 1px solid var(--border); }
+.cl-par__name { flex: 1; min-width: 8em; font-size: 14px; overflow-wrap: anywhere; }
+.cl-par__btn { min-height: 36px; padding: 6px 10px; font-size: 13px; }
+
+/* ===== GBビュー（スキーマ仕様 §9-4） ===== */
+
+.spot {
+  padding: 12px 14px;
+  margin-bottom: 10px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+.spot__head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+}
+.spot__name { font-size: 15px; font-weight: 700; overflow-wrap: anywhere; }
+.spot__price { font-size: 15px; font-weight: 700; font-variant-numeric: tabular-nums; }
+
+.spot__meta {
+  margin: 4px 0 8px;
+  font-size: 12px;
+  color: var(--text-dim);
+}
+.spot__players {
+  margin: 8px 0 0;
+  font-size: 14px;
+  overflow-wrap: anywhere;
+}
+.spot__sub { margin: 12px 0 6px; font-size: 13px; font-weight: 700; color: var(--text-dim); }
+
+.spot__cards {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 6px;
+}
+.spot__card {
+  width: 100%;
+  min-height: 38px;
+  padding: 6px 10px;
+  font-size: 13px;
+  text-align: left;
 }

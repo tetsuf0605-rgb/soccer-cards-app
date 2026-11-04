@@ -9,7 +9,7 @@
  * 最終取得の内容は js/cache.js が localStorage に持つ。
  */
 
-const CACHE_NAME = 'soccer-cards-shell-v4';
+const CACHE_NAME = 'soccer-cards-shell-v5';
 
 /**
  * インストール時に取っておくアプリ殻。
@@ -29,14 +29,18 @@ const SHELL = [
   './js/base64.js',
   './js/cache.js',
   './js/cardform.js',
+  './js/checklist.js',
+  './js/checklistform.js',
   './js/chips.js',
   './js/config.js',
   './js/confirm.js',
   './js/editform.js',
   './js/export.js',
+  './js/gb.js',
   './js/github.js',
   './js/ingest.js',
   './js/ingestform.js',
+  './js/library.js',
   './js/merge.js',
   './js/query.js',
   './js/refdata.js',

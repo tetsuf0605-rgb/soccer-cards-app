@@ -43,6 +43,10 @@ export function saveSnapshot(settings, data) {
     targets: data.refs?.targets ?? null,
     checklists: data.refs?.checklists ?? [],
     gb: data.refs?.gb ?? [],
+    // 最後に開いた製品・GBの中身だけ持つ（保存同期方式仕様 §4）。
+    // 全製品を抱えると localStorage が足りなくなる
+    lastChecklist: data.cache?.checklist ?? null,
+    lastGb: data.cache?.gb ?? null,
   };
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(snapshot));
@@ -86,6 +90,10 @@ export function loadSnapshot(settings) {
       targets: stored.targets ?? null,
       checklists: Array.isArray(stored.checklists) ? stored.checklists : [],
       gb: Array.isArray(stored.gb) ? stored.gb : [],
+    },
+    cache: {
+      checklist: stored.lastChecklist ?? null,
+      gb: stored.lastGb ?? null,
     },
   };
 }

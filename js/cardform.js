@@ -121,24 +121,43 @@ function syncPaste() {
 }
 
 /**
+ * モードごとのボタン文言。
+ *   ingest    … 写真判定JSONからの取り込み（登録経路A）
+ *   checklist … チェックリストからの登録（登録経路B。写真判定運用仕様 §8）
+ *   edit      … 既存カードの編集
+ */
+const MODE_LABELS = {
+  ingest: { save: '保存する', cancel: '取り込みを中止', back: '← 一覧へ' },
+  checklist: { save: 'この内容で登録する', cancel: '登録をやめる', back: '← 製品へ' },
+  edit: { save: '変更を保存', cancel: '編集をやめる', back: '← 詳細へ' },
+};
+
+function labelsFor(mode) {
+  return MODE_LABELS[mode] ?? MODE_LABELS.ingest;
+}
+
+/**
  * ボタンの文言と、モードでしか使わない部品の出し入れ。
  *
- * 新規登録では層を選ばせず常に金庫、収納はマグネット/トップローダーの2択
- * （写真判定運用仕様 §7-1・スキーマ仕様 §5-1）。編集では既存のギャラリー・
- * バインダーのカードを扱うので、どちらも選べるようにする（同 §5-2）。
+ * 新規登録（ingest / checklist）では層を選ばせず常に金庫、収納はマグネット/
+ * トップローダーの2択（写真判定運用仕様 §7-1・スキーマ仕様 §5-1）。編集では
+ * 既存のギャラリー・バインダーのカードを扱うので、どちらも選べるようにする（同 §5-2）。
  */
 export function setMode(mode) {
   state.mode = mode;
-  const ingest = mode === 'ingest';
-  els.skip.hidden = !ingest;
-  els.save.textContent = ingest ? '保存する' : '変更を保存';
-  els.cancel.textContent = ingest ? '取り込みを中止' : '編集をやめる';
-  els.back.textContent = ingest ? '← 一覧へ' : '← 詳細へ';
+  const isNew = mode !== 'edit';
+  const labels = labelsFor(mode);
 
-  els.tierField.hidden = ingest;
-  els.tierNote.hidden = !ingest;
-  els.storageBinder.hidden = ingest;
-  els.storageBinder.disabled = ingest;
+  // 「この1枚を飛ばす」は、複数枚を順に見る取り込みだけのもの
+  els.skip.hidden = mode !== 'ingest';
+  els.save.textContent = labels.save;
+  els.cancel.textContent = labels.cancel;
+  els.back.textContent = labels.back;
+
+  els.tierField.hidden = isNew;
+  els.tierNote.hidden = !isNew;
+  els.storageBinder.hidden = isNew;
+  els.storageBinder.disabled = isNew;
 
   syncPaste();
 }
@@ -339,7 +358,7 @@ export function fill(options) {
   els.featOther.value = features.filter((name) => !KNOWN_FEATURES.includes(name)).join(', ');
 
   // 新規登録は常に金庫。編集では台帳の値をそのまま出す
-  els.tier.value = options.mode === 'ingest' ? 'vault' : (values.tier ?? 'vault');
+  els.tier.value = options.mode === 'edit' ? (values.tier ?? 'vault') : 'vault';
   els.storageType.value = values.storageType ?? 'toploader';
   els.storageName.value = values.storageName ?? '';
   els.priceWatch.checked = Boolean(values.priceWatch);
@@ -393,7 +412,7 @@ export function isOpen() {
 export function setBusy(busy) {
   els.save.disabled = busy;
   els.skip.disabled = busy;
-  els.save.textContent = busy ? '保存中…' : (state.mode === 'ingest' ? '保存する' : '変更を保存');
+  els.save.textContent = busy ? '保存中…' : labelsFor(state.mode).save;
 }
 
 export function message(text, kind) {
@@ -441,10 +460,11 @@ export function read() {
   if (!els.series.value.trim()) return invalid('シリーズを入力してください。', els.series);
   if (!els.team.value.trim()) return invalid('プリント時チームを入力してください。', els.team);
 
-  // 写真判定運用仕様 §5: シリアルは「実物と一致」チェックなしでは保存できない。
-  // 編集では、シリアルを変えたときだけ確認を求める（登録時に一度確認済みのため）
+  // 写真判定運用仕様 §5・§8-3: シリアルは「実物と一致」チェックなしでは保存できない
+  // （チェックリスト登録でも目視確認は必須）。編集では、シリアルを変えたときだけ
+  // 確認を求める（登録時に一度確認済みのため）
   const serial = els.serial.value.trim();
-  const needsSerialCheck = serial && (state.mode === 'ingest' || serial !== state.originalSerial);
+  const needsSerialCheck = serial && (state.mode !== 'edit' || serial !== state.originalSerial);
   if (needsSerialCheck && !els.serialOk.checked) {
     return invalid('シリアルが実物と一致することを確認してチェックを入れてください。', els.serialOk);
   }
@@ -484,7 +504,7 @@ export function read() {
         features: readFeatures(),
         teamOnCard: els.team.value,
         // 新規登録では選ばせないので、フォームの値ではなく固定値を返す
-        tier: state.mode === 'ingest' ? 'vault' : els.tier.value,
+        tier: state.mode === 'edit' ? els.tier.value : 'vault',
         storageType: els.storageType.value,
         storageName: els.storageName.value,
         priceWatch: els.priceWatch.checked,

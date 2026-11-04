@@ -43,10 +43,58 @@ export function formatStorage(storage) {
   return storage.name ? `${base}（${storage.name}）` : base;
 }
 
+export function formatYen(value) {
+  return typeof value === 'number' ? `¥${value.toLocaleString('ja-JP')}` : null;
+}
+
 export function formatPrice(price) {
   if (!price || typeof price.current !== 'number') return null;
-  const yen = `¥${price.current.toLocaleString('ja-JP')}`;
+  const yen = formatYen(price.current);
   return price.checkedAt ? `${yen}（${price.checkedAt} 時点）` : yen;
+}
+
+/** 推定の出し方（スキーマ仕様 §9-7）。 */
+const METHOD_LABEL = {
+  exact: '同一カードの実測の中央値',
+  model: '選手基準×係数',
+  fallback: '同製品の他選手で代用',
+};
+
+export function formatMethod(method) {
+  return METHOD_LABEL[method] ?? method ?? '';
+}
+
+/**
+ * 推定価格の表示文（スキーマ仕様 §9-7）。
+ *
+ * 信頼度 高・中 は value を、低 は「low〜high」の幅だけを出す。
+ * 幅を出せない（low/high が無い）低信頼は、やむをえず value を出す。
+ */
+export function formatEstimate(estimate) {
+  if (!estimate || typeof estimate !== 'object') return null;
+
+  if (estimate.confidence === '低') {
+    const low = formatYen(estimate.low);
+    const high = formatYen(estimate.high);
+    if (low && high) return `${low}〜${high}`;
+  }
+  return formatYen(estimate.value);
+}
+
+/**
+ * 一覧・詳細に出す価格の1行。実測があれば実測、無ければ推定（スキーマ仕様 §9-7）。
+ *
+ * @param {object} card マージ済みのカード
+ * @returns {{kind: 'measured'|'estimate'|'none', text: string}}
+ */
+export function priceLine(card) {
+  const measured = formatPrice(card?.price);
+  if (measured) return { kind: 'measured', text: measured };
+
+  const estimate = formatEstimate(card?.estimate);
+  if (estimate) return { kind: 'estimate', text: `推定 ${estimate}` };
+
+  return { kind: 'none', text: '価格未確認' };
 }
 
 export function formatFeature(feature) {
@@ -101,10 +149,8 @@ export function buildCard(row) {
   ])));
   button.append(el('p', 'card__line', joinParts([card.teamOnCard, formatStorage(card.storage)])));
 
-  const price = formatPrice(card.price);
-  button.append(price
-    ? el('p', 'card__price', price)
-    : el('p', 'card__price card__price--none', '価格未確認'));
+  const price = priceLine(card);
+  button.append(el('p', `card__price card__price--${price.kind}`, price.text));
 
   const badges = el('div', 'badges');
   badges.append(tierBadge(card.tier));
@@ -153,15 +199,33 @@ function buildPriceSection(card, fromOverlay) {
   section.append(el('h3', 'section-title', '価格'));
 
   const dl = el('dl', 'kv');
-  kvRow(dl, '現在価格', typeof card.price?.current === 'number'
-    ? `¥${card.price.current.toLocaleString('ja-JP')}`
-    : null);
+  kvRow(dl, '現在価格', formatYen(card.price?.current));
   kvRow(dl, '最終確認日', card.price?.checkedAt);
   kvRow(dl, '情報源', card.price?.source);
   kvRow(dl, '価格ウォッチ', card.priceWatch ? 'ON' : 'OFF');
   section.append(dl);
 
   if (fromOverlay) section.append(overlayNote('prices.json（cowork更新）の値を表示しています'));
+
+  // 推定価格（スキーマ仕様 §9-7）。実測とは別物だと分かるように節を分ける
+  if (card.estimate && typeof card.estimate === 'object') {
+    const measured = typeof card.price?.current === 'number';
+    section.append(el('h3', 'section-title', '推定価格'));
+
+    const estimateDl = el('dl', 'kv');
+    kvRow(estimateDl, '推定', formatEstimate(card.estimate));
+    kvRow(estimateDl, '信頼度', card.estimate.confidence);
+    kvRow(estimateDl, '出し方', formatMethod(card.estimate.method));
+    kvRow(estimateDl, '推定日', card.estimate.estimatedAt);
+    section.append(estimateDl);
+
+    if (!isEmpty(card.estimate.basis)) {
+      section.append(el('p', 'notes notes--basis', card.estimate.basis));
+    }
+    section.append(el('p', 'estimate-note', measured
+      ? '実測があるので、一覧には実測を出しています。'
+      : '実測がないため、一覧にはこの推定を「推定」と付けて出しています。'));
+  }
 
   const history = card.priceHistory ?? [];
   if (history.length > 0) {

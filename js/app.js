@@ -9,12 +9,12 @@
  */
 import { loadSettings, saveSettings, clearSettings, isConfigured } from './config.js';
 import {
-  fetchAllFiles, commitCollection, commitTargets as commitTargetsFile,
-  DATA_FILES, REF_FILES, REF_DIRS,
+  fetchAllFiles, getJsonFile, commitCollection, commitTargets as commitTargetsFile,
+  checklistPath, gbPath, DATA_FILES, REF_FILES, REF_DIRS,
 } from './github.js';
 import { mergeCollection } from './merge.js';
 import {
-  buildRows, filterRows, applyChips, sortRows, findSortOption,
+  buildRows, filterRows, applyChips, sortRows, findSortOption, effectivePrice,
   defaultFilters, SORT_OPTIONS, DEFAULT_SORT_ID,
 } from './query.js';
 import { buildTeamIndex } from './refdata.js';
@@ -23,6 +23,8 @@ import { createIngestForm } from './ingestform.js';
 import { createEditForm } from './editform.js';
 import { createFilterBar } from './chips.js';
 import { createTargetsView } from './targets.js';
+import { createLibrary } from './library.js';
+import { createChecklistForm } from './checklistform.js';
 import { setGbOptions } from './cardform.js';
 import { applyTeamTheme } from './theme.js';
 import { askConfirm, closeConfirm } from './confirm.js';
@@ -39,10 +41,17 @@ const els = {
   importToggle: document.getElementById('btn-import'),
   targetsToggle: document.getElementById('btn-targets'),
   targetsBack: document.getElementById('btn-targets-back'),
+  libraryToggle: document.getElementById('btn-library'),
+  libraryBack: document.getElementById('btn-library-back'),
+  checklistBack: document.getElementById('btn-checklist-back'),
+  gbBack: document.getElementById('btn-gb-back'),
   viewList: document.getElementById('view-list'),
   viewDetail: document.getElementById('view-detail'),
   viewForm: document.getElementById('view-form'),
   viewTargets: document.getElementById('view-targets'),
+  viewLibrary: document.getElementById('view-library'),
+  viewChecklist: document.getElementById('view-checklist'),
+  viewGb: document.getElementById('view-gb'),
   viewSettings: document.getElementById('view-settings'),
   search: document.getElementById('input-search'),
   sortSelect: document.getElementById('select-sort'),
@@ -85,6 +94,11 @@ const state = {
    * teams / targets は中身とsha、checklists / gb はファイル一覧だけ持つ。
    */
   refs: { teams: null, targets: null, checklists: [], gb: [] },
+  /**
+   * 最後に開いた製品・GBの中身（保存同期方式仕様 §4）。
+   * ディレクトリの一覧と違い、中身は開いたときに個別GETする
+   */
+  cache: { checklist: null, gb: null },
   /** teams.json の索引。取得前・未作成でも使える空の索引で始める */
   teamIndex: buildTeamIndex(null),
   rows: [],
@@ -180,10 +194,20 @@ function renderList() {
       ? `「${state.query}」と絞り込みに一致するカードはありません。`
       : '絞り込みに一致するカードはありません。');
   } else if (rows.length === state.rows.length) {
-    setMessage(els.listMessage, `${rows.length}枚`);
+    setMessage(els.listMessage, `${rows.length}枚${priceSortNote(rows)}`);
   } else {
-    setMessage(els.listMessage, `${rows.length}枚 / 全${state.rows.length}枚`);
+    setMessage(els.listMessage, `${rows.length}枚 / 全${state.rows.length}枚${priceSortNote(rows)}`);
   }
+}
+
+/**
+ * 価格で並べているとき、実測がないカードが推定で並んでいることを添える
+ * （スキーマ仕様 §9-7。prices.json はほとんどが推定だけのエントリ）。
+ */
+function priceSortNote(rows) {
+  if (state.sortId !== 'price') return '';
+  const estimated = rows.filter((row) => effectivePrice(row.card).source === 'estimate').length;
+  return estimated > 0 ? `｜うち${estimated}枚は推定で並べています` : '';
 }
 
 /* ===== 読み込み ===== */
@@ -206,6 +230,17 @@ function showFetchStatus(result) {
   );
 }
 
+/** いまの取得内容をオフライン閲覧用に取り置く。 */
+function persistSnapshot() {
+  return saveSnapshot(settings, {
+    collection: state.collection,
+    overlays: state.overlays,
+    refs: state.refs,
+    cache: state.cache,
+    fetchedAt: state.fetchedAt,
+  });
+}
+
 /**
  * 保存済みキャッシュを画面に出す（起動時と、取得に失敗したとき）。
  * @returns {boolean} 出せたら true
@@ -218,6 +253,7 @@ function showSnapshot() {
   state.collection = snapshot.collection;
   state.overlays = snapshot.overlays;
   state.refs = snapshot.refs ?? { teams: null, targets: null, checklists: [], gb: [] };
+  state.cache = snapshot.cache ?? { checklist: null, gb: null };
   state.fetchedAt = snapshot.fetchedAt;
   state.fresh = false;
   applyMerge();
@@ -266,12 +302,7 @@ async function load() {
     updateWriteAvailability();
 
     // オフライン閲覧用に取り置く。落ちても今の表示には影響しない
-    const cached = saveSnapshot(settings, {
-      collection: state.collection,
-      overlays: state.overlays,
-      refs: state.refs,
-      fetchedAt: state.fetchedAt,
-    });
+    const cached = persistSnapshot();
     if (!cached) {
       // 黙って落とすとオフラインで開けない理由が分からなくなる
       els.fetchStatus.append(el('p', 'message message--error',
@@ -356,10 +387,15 @@ function showView(name) {
   els.viewDetail.hidden = name !== 'detail';
   els.viewForm.hidden = name !== 'form';
   els.viewTargets.hidden = name !== 'targets';
+  els.viewLibrary.hidden = name !== 'library';
+  els.viewChecklist.hidden = name !== 'checklist';
+  els.viewGb.hidden = name !== 'gb';
   els.viewSettings.hidden = name !== 'settings';
   els.settingsToggle.setAttribute('aria-expanded', String(name === 'settings'));
   els.importToggle.setAttribute('aria-expanded', String(name === 'form'));
   els.targetsToggle.setAttribute('aria-expanded', String(name === 'targets'));
+  els.libraryToggle.setAttribute('aria-expanded',
+    String(name === 'library' || name === 'checklist' || name === 'gb'));
 
   if (name === 'settings') {
     els.owner.value = settings.owner;
@@ -413,6 +449,8 @@ async function commit(apply) {
   state.collection = { json: result.json, sha: result.sha };
   applyMerge();
   renderList();
+  // 開いている所持照合・GBビューも、増えた/消えたカードに合わせて出し直す
+  library.refresh();
   return result;
 }
 
@@ -482,6 +520,67 @@ function openTargets() {
   }
   targetsView.open();
   showView('targets');
+}
+
+/* ===== 製品（チェックリスト）とGB ===== */
+
+/**
+ * 参照データの中身を1つ取る（保存同期方式仕様 §4「選択時に個別GET」）。
+ *
+ * 取れたら「最後に開いた1件」として取り置き、取れなかったときは同じキーの
+ * 取り置きで代用する（圏外でも直前に見た製品は開ける）。
+ *
+ * @param {'checklist'|'gb'} kind
+ * @param {string} key productKey または breakId
+ * @param {string} path リポジトリ内のパス
+ */
+async function loadRefFile(kind, key, path) {
+  const cached = state.cache[kind];
+  try {
+    const { json } = await getJsonFile(settings, path);
+    state.cache[kind] = { key, json };
+    persistSnapshot();
+    return json;
+  } catch (error) {
+    if (cached?.key === key) return cached.json;
+    throw error;
+  }
+}
+
+const library = createLibrary({
+  getRefs: () => state.refs,
+  getRows: () => state.rows,
+  getTeamIndex: () => state.teamIndex,
+  loadChecklist: (productKey) => loadRefFile('checklist', productKey, checklistPath(productKey)),
+  loadGb: (breakId) => loadRefFile('gb', breakId, gbPath(breakId)),
+  showView,
+  onRegister: openChecklistRegister,
+  onOpenCard: (cardId) => openDetail(cardId),
+  canWrite: writesAllowed,
+});
+
+const checklistForm = createChecklistForm({
+  getCollection: () => state.collection,
+  getTeamIndex: () => state.teamIndex,
+  commit,
+  onDone: (note) => library.backToChecklist(note),
+});
+
+/** 所持照合の「このカードを登録」（写真判定運用仕様 §8）。 */
+function openChecklistRegister(checklist, row, variation) {
+  if (!requireLoaded('チェックリスト登録')) return;
+  ingestForm.close();
+  editForm.close();
+  if (checklistForm.open(checklist, row, variation)) showView('form');
+}
+
+function openLibrary() {
+  if (!isConfigured(settings)) {
+    showView('settings');
+    setMessage(els.settingsMessage, '製品・GBの前に owner / repo / PAT を設定してください。', 'error');
+    return;
+  }
+  library.open();
 }
 
 /** 書き込み操作の前提（設定済み・台帳を読み込み済み）を確かめる。 */
@@ -657,9 +756,19 @@ els.targetsToggle.addEventListener('click', () => {
 
 els.targetsBack.addEventListener('click', () => showView('list'));
 
+els.libraryToggle.addEventListener('click', () => {
+  if (els.viewLibrary.hidden) openLibrary();
+  else showView('list');
+});
+
+els.libraryBack.addEventListener('click', () => showView('list'));
+els.checklistBack.addEventListener('click', () => library.open());
+els.gbBack.addEventListener('click', () => library.open());
+
 els.reload.addEventListener('click', () => {
   ingestForm.close();
   editForm.close();
+  checklistForm.close();
   detailCardId = null;
   showView('list');
   load();
@@ -749,10 +858,12 @@ els.clear.addEventListener('click', async () => {
   els.token.value = '';
   ingestForm.close();
   editForm.close();
+  checklistForm.close();
   detailCardId = null;
   state.collection = null;
   state.rows = [];
   state.refs = { teams: null, targets: null, checklists: [], gb: [] };
+  state.cache = { checklist: null, gb: null };
   state.filters = defaultFilters();
   applyRefs();
   filterBar.setOpen(false);

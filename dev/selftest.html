@@ -44,15 +44,27 @@ import { FIXTURES } from './fixtures.js';
 import { encodeBase64Utf8, decodeBase64Utf8 } from '../js/base64.js';
 import {
   fetchAllFiles, getJsonFile, putCollection, putJsonText, commitCollection, commitTargets,
-  listJsonDirectory, DATA_FILES, REF_FILES, REF_DIRS, WRITABLE_PATH, WRITABLE_PATHS,
+  listJsonDirectory, checklistPath, gbPath,
+  DATA_FILES, REF_FILES, REF_DIRS, WRITABLE_PATH, WRITABLE_PATHS,
 } from '../js/github.js';
-import { buildCardList, buildDetail, formatPrice, formatStorage, formatAge } from '../js/render.js';
+import {
+  buildCardList, buildDetail, formatPrice, formatStorage, formatAge,
+  formatEstimate, formatYen, priceLine,
+} from '../js/render.js';
 import { mergeCollection } from '../js/merge.js';
 import {
   buildRows, sortRows, filterRows, applyChips, defaultFilters, hasActiveFilters,
-  ageFromBirthDate, searchHaystack, foldText, CHIP_GROUPS, SORT_OPTIONS,
+  ageFromBirthDate, searchHaystack, foldText, effectivePrice, CHIP_GROUPS, SORT_OPTIONS,
 } from '../js/query.js';
 import { matchKey } from '../js/text.js';
+import {
+  productKeyOf, productKeyOfCard, slug, readChecklist, applicableVariations,
+  matchChecklist, cardNoKey, parallelsClipboardText, valuesFromChecklistRow,
+} from '../js/checklist.js';
+import {
+  readGb, spotTeams, cardsFromBreak, assignCardsToSpots,
+  formatLabel, gbStatusLabel, spotTypeLabel,
+} from '../js/gb.js';
 import {
   buildTeamIndex, resolveTeam, teamLabel, teamFacets, searchTeamFacets, teamIdsForRow,
   readTargets, addTarget, removeTarget, describeTargets, formatCareerEntry, TEAM_MODES,
@@ -335,7 +347,7 @@ await test('マージ: 孤児エントリ（存在しないID）は無視され�
   assertEqual(sources.cards.size, 0, 'オーバーレイ由来は0件');
 });
 
-await test('マージ結果はv1.2の形を保つ（余計なキーを足さない）', () => {
+await test('マージ結果はスキーマの形を保つ（足すのは estimate だけ）', () => {
   const base = parse('collection.json');
   const { merged } = mergeCollection(base, parse('prices.json'), parse('players_info.json'));
   assertEqual(Object.keys(merged).sort().join(','), Object.keys(base).sort().join(','), 'トップレベルのキー');
@@ -1034,6 +1046,200 @@ await test('キャッシュ: 保存分からエクスポートできる（オフ
   assertEqual(file.json.cards.find((c) => c.id === 'c-20260811-k3f').price.current, 13000, '価格');
 }));
 
+/* ========== 推定価格（スキーマ仕様 §9-7） ========== */
+
+/** prices.json を差し替えて、実測あり / 推定のみ(高・低) / どちらも無し を作る。 */
+const PRICES_WITH_ESTIMATES = () => ({
+  schemaVersion: 1,
+  prices: {
+    // 実測あり＋推定あり: 実測を優先する
+    'c-20260811-k3f': {
+      current: 13000,
+      checkedAt: '2026-08-12',
+      source: 'メルカリ',
+      history: [{ date: '2026-08-12', price: 13000, source: 'メルカリ' }],
+      estimate: {
+        value: 12500, low: 9000, high: 17000, confidence: '高',
+        method: 'exact', basis: '同一カードの実測の中央値(11件)', estimatedAt: '2026-11-04',
+      },
+    },
+    // 推定だけ（信頼度 中）: current を持たない
+    'c-20260812-m7q': {
+      estimate: {
+        value: 84000, low: 42000, high: 166000, confidence: '中',
+        method: 'model', basis: '選手基準3500円(販売例25件) × auto 10.0 × <=99 1.51',
+        estimatedAt: '2026-11-04',
+      },
+    },
+  },
+});
+
+/** 信頼度「低」の推定だけを持つ prices.json。 */
+const PRICES_LOW_CONFIDENCE = () => ({
+  schemaVersion: 1,
+  prices: {
+    'c-20260812-m7q': {
+      estimate: {
+        value: 660, low: 150, high: 2900, confidence: '低',
+        method: 'fallback', basis: '選手本人の販売例なし。同製品の他選手41人の下位25%点で代用',
+        estimatedAt: '2026-11-04',
+      },
+    },
+  },
+});
+
+await test('マージ: 推定だけのエントリは price を潰さない', () => {
+  const base = parse('collection.json');
+  // 台帳に手入力の価格が入っているカードを用意する
+  const withManual = {
+    ...base,
+    cards: base.cards.map((card) => (card.id === 'c-20260812-m7q'
+      ? { ...card, price: { current: 500, checkedAt: '2026-08-12', source: '手動' } }
+      : card)),
+  };
+
+  const { merged } = mergeCollection(withManual, PRICES_WITH_ESTIMATES(), parse('players_info.json'));
+  const card = merged.cards.find((c) => c.id === 'c-20260812-m7q');
+
+  // 以前は {current: null, checkedAt: null, source: null} で上書きされていた
+  assertEqual(card.price.current, 500, '台帳の実測が残る');
+  assertEqual(card.price.source, '手動', '情報源も残る');
+  assertEqual(card.estimate.value, 84000, '推定は別フィールドで載る');
+  assertEqual(card.estimate.confidence, '中', '信頼度');
+});
+
+await test('マージ: 実測があれば実測を使い、推定も一緒に持つ', () => {
+  const { merged, sources } = mergeCollection(
+    parse('collection.json'), PRICES_WITH_ESTIMATES(), parse('players_info.json'));
+  const card = merged.cards.find((c) => c.id === 'c-20260811-k3f');
+
+  assertEqual(card.price.current, 13000, '実測');
+  assertEqual(card.priceHistory.length, 1, '履歴');
+  assertEqual(card.estimate.value, 12500, '推定も載る');
+  assertEqual(sources.cards.has('c-20260811-k3f'), true, 'オーバーレイ由来');
+  // 推定だけのカードもオーバーレイ由来として印を付ける
+  assertEqual(sources.cards.has('c-20260812-m7q'), true, '推定だけでも印が付く');
+});
+
+await test('推定の表示: 高・中は値、低は幅', () => {
+  assertEqual(formatEstimate({ value: 84000, low: 42000, high: 166000, confidence: '高' }),
+    '¥84,000', '高は値');
+  assertEqual(formatEstimate({ value: 84000, low: 42000, high: 166000, confidence: '中' }),
+    '¥84,000', '中は値');
+  assertEqual(formatEstimate({ value: 660, low: 150, high: 2900, confidence: '低' }),
+    '¥150〜¥2,900', '低は幅');
+  // 幅を出せない低信頼は、やむをえず値を出す
+  assertEqual(formatEstimate({ value: 660, confidence: '低' }), '¥660', '幅が無い低信頼');
+  assertEqual(formatEstimate(null), null, '推定なし');
+  assertEqual(formatEstimate({}), null, '中身が無い');
+});
+
+await test('価格の1行: 実測 → 推定 → 未確認の順に選ぶ', () => {
+  const measured = priceLine({
+    price: { current: 13000, checkedAt: '2026-08-12' },
+    estimate: { value: 12500, confidence: '高' },
+  });
+  assertEqual(measured.kind, 'measured', '実測を優先');
+  assertEqual(measured.text, '¥13,000（2026-08-12 時点）', '実測の文面');
+
+  const estimated = priceLine({ price: null, estimate: { value: 84000, confidence: '中' } });
+  assertEqual(estimated.kind, 'estimate', '推定');
+  assertEqual(estimated.text, '推定 ¥84,000', '「推定」と明示する');
+
+  const low = priceLine({ estimate: { value: 660, low: 150, high: 2900, confidence: '低' } });
+  assertEqual(low.text, '推定 ¥150〜¥2,900', '低信頼は幅');
+
+  const none = priceLine({ price: null });
+  assertEqual(none.kind, 'none', 'どちらも無し');
+  assertEqual(none.text, '価格未確認', '未確認の文面');
+});
+
+await test('一覧の描画: 推定のカードに「推定」が出る', () => {
+  const { merged, career } = mergeCollection(
+    parse('collection.json'), PRICES_WITH_ESTIMATES(), parse('players_info.json'));
+  const rows = buildRows(merged, career);
+  const nodes = buildCardList(rows);
+
+  const texts = nodes.map((node) => node.querySelector('.card__price').textContent);
+  assert(texts.includes('¥13,000（2026-08-12 時点）'), '実測のカード');
+  assert(texts.includes('推定 ¥84,000'), '推定のカード');
+
+  const estimateNode = nodes.find((node) => node.querySelector('.card__price--estimate'));
+  assert(estimateNode, '推定には専用のクラスが付く');
+});
+
+await test('並び替え: 実測が無いカードは推定で並ぶ', () => {
+  const { merged } = mergeCollection(
+    parse('collection.json'), PRICES_WITH_ESTIMATES(), parse('players_info.json'));
+  const rows = buildRows(merged);
+
+  assertEqual(effectivePrice(rows.find((r) => r.card.id === 'c-20260811-k3f').card).source,
+    'measured', '実測のカード');
+  assertEqual(effectivePrice(rows.find((r) => r.card.id === 'c-20260812-m7q').card).value,
+    84000, '推定の値で並ぶ');
+
+  // 推定84,000 > 実測13,000 なので、降順では推定のカードが先に来る
+  const desc = sortRows(rows, 'price', true);
+  assertEqual(desc[0].card.id, 'c-20260812-m7q', '降順の先頭');
+
+  // 低信頼でも並べるのは value（幅の真ん中ではない）
+  const { merged: lowMerged } = mergeCollection(
+    parse('collection.json'), PRICES_LOW_CONFIDENCE(), parse('players_info.json'));
+  const lowRow = buildRows(lowMerged).find((r) => r.card.id === 'c-20260812-m7q');
+  assertEqual(effectivePrice(lowRow.card).value, 660, '低信頼は value で並べる');
+});
+
+await test('並び替え: 価格が無いカードは末尾のまま', () => {
+  const { merged } = mergeCollection(parse('collection.json'), null, parse('players_info.json'));
+  const rows = buildRows(merged);
+  const withoutPrice = rows.filter((row) => effectivePrice(row.card).value === null);
+  assert(withoutPrice.length > 0, '価格の無いカードが無い（前提が崩れている）');
+
+  for (const desc of [false, true]) {
+    const sorted = sortRows(rows, 'price', desc);
+    assertEqual(effectivePrice(sorted[sorted.length - 1].card).value, null,
+      `${desc ? '降順' : '昇順'}でも末尾`);
+  }
+});
+
+await test('詳細: 推定の根拠と推定日が出る', () => {
+  const { merged, sources, career } = mergeCollection(
+    parse('collection.json'), PRICES_LOW_CONFIDENCE(), parse('players_info.json'));
+  const rows = buildRows(merged, career);
+  const node = buildDetail(rows.find((r) => r.card.id === 'c-20260812-m7q'), sources, null);
+  const text = node.textContent;
+
+  assert(text.includes('推定価格'), '推定の節が出る');
+  assert(text.includes('¥150〜¥2,900'), '低信頼は幅で出る');
+  assert(text.includes('低'), '信頼度');
+  assert(text.includes('同製品の他選手で代用'), '出し方（method）');
+  assert(text.includes('下位25%点で代用'), '根拠（basis）');
+  assert(text.includes('2026-11-04'), '推定日');
+});
+
+await test('詳細: 推定が無ければ推定の節も出ない', () => {
+  const { merged, sources } = mergeCollection(
+    parse('collection.json'), parse('prices.json'), parse('players_info.json'));
+  const rows = buildRows(merged);
+  const node = buildDetail(rows.find((r) => r.card.id === 'c-20260811-k3f'), sources, null);
+  assert(!node.textContent.includes('推定価格'), '推定の節が出てしまっている');
+});
+
+await test('エクスポート: 推定は書き出さない（スキーマの完全形を保つ）', () => {
+  const file = buildExport(parse('collection.json'), {
+    prices: PRICES_WITH_ESTIMATES(), playersInfo: parse('players_info.json'),
+  }, EXPORT_DATE);
+
+  assert(!file.text.includes('estimate'), 'エクスポートに estimate が出ている');
+  // 実測はこれまでどおり畳み込む
+  assertEqual(file.json.cards.find((c) => c.id === 'c-20260811-k3f').price.current, 13000, '実測');
+  // 推定だけのカードは台帳の価格のまま
+  assertEqual(file.json.cards.find((c) => c.id === 'c-20260812-m7q').price, null, '推定だけなら台帳のまま');
+  for (const card of file.json.cards) {
+    assert(!('estimate' in card), `${card.id} に estimate が残っている`);
+  }
+});
+
 /* ========== 参照データ（段階2-B / スキーマ仕様 §9） ========== */
 
 /** teams.json の小さなサンプル（publicリポジトリなので実データは置かない）。 */
@@ -1519,6 +1725,290 @@ await test('キャッシュ: v1の保存分は捨てる（参照データが無�
   }));
   assertEqual(loadSnapshot(SETTINGS), null, '古い版は使わない');
 }));
+
+/* ========== チェックリストと所持照合（段階3 / スキーマ仕様 §9-3・§10） ========== */
+
+await test('productKey: 仕様§9-3のサンプルを再現する', () => {
+  // series が maker で始まるときは maker を重ねない
+  assertEqual(productKeyOf('Topps', 'Topps Chrome UEFA Club Competitions', '2025-26'),
+    '2025-26-topps-chrome-uefa-club-competitions', '仕様のサンプル');
+  // 重ならないときは maker を挟む
+  assertEqual(productKeyOf('Panini', 'Prizm Premier League', '2023-24'),
+    '2023-24-panini-prizm-premier-league', 'makerを挟む');
+  assertEqual(productKeyOf('Futera', 'Club Unique FC Barcelona', '2025-26'),
+    '2025-26-futera-club-unique-fc-barcelona', '別メーカー');
+  // series と maker が同じなら1回だけ
+  assertEqual(productKeyOf('Panini', 'Panini', '2023'), '2023-panini', '同じ名前');
+
+  // 記号・大文字・アクセントは落とす
+  assertEqual(productKeyOf('Topps', 'Mérito & Co.', '2024-25'), '2024-25-topps-merito-co', '記号とアクセント');
+  assertEqual(slug('  Gold  Refractor /50 '), 'gold-refractor-50', 'slug');
+
+  // season か series が無いと作れない（§10-1）
+  assertEqual(productKeyOf('Topps', 'Chrome', null), null, 'seasonなし');
+  assertEqual(productKeyOf('Topps', 'Chrome', ''), null, 'season空');
+  assertEqual(productKeyOf('Topps', null, '2025-26'), null, 'seriesなし');
+});
+
+await test('productKey: 台帳のカードから引ける', () => {
+  const cards = parse('collection.json').cards;
+  assertEqual(productKeyOfCard(cards.find((c) => c.id === 'c-20260811-k3f')),
+    '2023-24-panini-prizm-premier-league', '1枚目');
+  assertEqual(productKeyOfCard({ maker: 'Topps', series: 'Chrome', season: null }), null, 'seasonなし');
+});
+
+/** fixture の1枚目（Prizm Premier League #110 Silver Prizm）に合わせたチェックリスト。 */
+const CHECKLIST_SAMPLE = {
+  schemaVersion: 2,
+  productKey: '2023-24-panini-prizm-premier-league',
+  maker: 'Panini',
+  series: 'Prizm Premier League',
+  season: '2023-24',
+  coverage: 'full',
+  cardsCoverage: 'partial',
+  confirmedAt: '2026-11-05',
+  sources: ['https://example.invalid/checklist'],
+  variations: [
+    { name: 'Base', category: 'base', denominator: 'none' },
+    { name: 'Silver Prizm', category: 'parallel', denominator: 'none' },
+    { name: 'Gold Prizm', category: 'parallel', denominator: 10 },
+    { name: 'Kaboom!', category: 'insert', denominator: 'none' },
+  ],
+  cards: [
+    // 所持（#110 Silver Prizm を持っている）
+    { cardNo: '110', nameEn: 'Jude Bellingham', team: 'Borussia Dortmund', kind: 'base', parallels: 'all', features: [] },
+    // 未所持
+    { cardNo: '200', nameEn: 'Bukayo Saka', team: 'Arsenal', kind: 'base', parallels: 'all', features: [] },
+    // 複数選手カード
+    {
+      cardNo: 'DUO-1', nameEn: 'Jude Bellingham', nameEnOthers: ['Bukayo Saka'],
+      team: 'Arsenal', kind: 'auto', parallels: ['Base', 'Gold Prizm'], features: ['auto'],
+      notes: 'デュアルオート',
+    },
+  ],
+};
+
+await test('チェックリストの読み取り: 壊れていても落ちない', () => {
+  const checklist = readChecklist(CHECKLIST_SAMPLE);
+  assertEqual(checklist.variations.length, 4, 'パラレル');
+  assertEqual(checklist.cards.length, 3, 'カード');
+
+  const empty = readChecklist(null);
+  assertEqual(empty.variations.length, 0, '中身なし');
+  assertEqual(empty.cardsCoverage, 'none', 'cards[]が無ければ none');
+
+  // 名前の無いパラレル・番号の無いカードは落とす
+  const broken = readChecklist({ variations: [{ name: '' }, { name: 'A' }], cards: [{ nameEn: 'x' }] });
+  assertEqual(broken.variations.length, 1, '名前のあるパラレルだけ');
+  assertEqual(broken.cards.length, 0, '番号のないカードは落とす');
+});
+
+await test('パラレルの適用範囲: "all" は base/parallel 全部', () => {
+  const checklist = readChecklist(CHECKLIST_SAMPLE);
+  const [base, , duo] = checklist.cards;
+
+  // "all" は category が base / parallel のものだけ（insert の Kaboom! は入らない）
+  assertEqual(applicableVariations(checklist, base).join(','), 'Base,Silver Prizm,Gold Prizm', '"all"');
+  // オート・インサートは個別に列挙したものをそのまま使う
+  assertEqual(applicableVariations(checklist, duo).join(','), 'Base,Gold Prizm', '列挙');
+  assertEqual(applicableVariations(checklist, { parallels: [] }).length, 0, '空');
+});
+
+await test('所持照合: 4区分を出し分ける（§10-2）', () => {
+  const checklist = readChecklist(CHECKLIST_SAMPLE);
+  const { merged } = mergeCollection(parse('collection.json'), null, null);
+  const rows = buildRows(merged);
+
+  const { entries, counts } = matchChecklist(checklist, rows);
+
+  // #110 は Silver Prizm を持っている → 行としては「所持」
+  const owned = entries.find((entry) => entry.row.cardNo === '110');
+  assertEqual(owned.match.status, 'owned', '#110');
+  assertEqual(owned.match.byVariation.find((v) => v.name === 'Silver Prizm').status, 'owned', '持っているパラレル');
+  assertEqual(owned.match.byVariation.find((v) => v.name === 'Base').status, 'otherParallel', '別のパラレル');
+  assertEqual(owned.match.byVariation.find((v) => v.name === 'Gold Prizm').status, 'otherParallel', '別のパラレル2');
+
+  // #200 は1枚も持っていない
+  assertEqual(entries.find((entry) => entry.row.cardNo === '200').match.status, 'missing', '#200');
+  assertEqual(entries.find((entry) => entry.row.cardNo === 'DUO-1').match.status, 'missing', 'DUO-1');
+
+  assertEqual(counts.owned, 1, '所持の件数');
+  assertEqual(counts.missing, 2, '未所持の件数');
+});
+
+await test('所持照合: variation が未確定なら「候補あり」', () => {
+  const base = parse('collection.json');
+  const undecided = {
+    ...base,
+    cards: base.cards.map((card) => (card.id === 'c-20260811-k3f' ? { ...card, variation: '' } : card)),
+  };
+  const checklist = readChecklist(CHECKLIST_SAMPLE);
+  const { entries } = matchChecklist(checklist, buildRows(mergeCollection(undecided, null, null).merged));
+
+  const entry = entries.find((item) => item.row.cardNo === '110');
+  assertEqual(entry.match.status, 'candidate', '行のまとめ');
+  for (const variation of entry.match.byVariation) {
+    assertEqual(variation.status, 'candidate', `${variation.name}`);
+  }
+});
+
+await test('所持照合: cardNo は大文字小文字と空白を無視する（§10-1）', () => {
+  assertEqual(cardNoKey(' ca-dr '), 'ca-dr', '前後の空白');
+  assertEqual(cardNoKey('CA DR'), 'cadr', '途中の空白');
+  assertEqual(cardNoKey('Ca-Dr'), 'ca-dr', '大文字小文字');
+  // ハイフンは消さない（CA-DR と CADR は別のカード番号）
+  assert(cardNoKey('CA-DR') !== cardNoKey('CADR'), 'ハイフンは残す');
+
+  const base = parse('collection.json');
+  const spaced = {
+    ...base,
+    cards: base.cards.map((card) => (card.id === 'c-20260811-k3f' ? { ...card, cardNo: ' 110 ' } : card)),
+  };
+  const { entries } = matchChecklist(
+    readChecklist(CHECKLIST_SAMPLE), buildRows(mergeCollection(spaced, null, null).merged));
+  assertEqual(entries.find((item) => item.row.cardNo === '110').match.status, 'owned', '空白入りでも当たる');
+});
+
+await test('所持照合: 製品が違えば当たらない', () => {
+  const other = { ...CHECKLIST_SAMPLE, season: '2024-25', productKey: '2024-25-panini-prizm-premier-league' };
+  const { merged } = mergeCollection(parse('collection.json'), null, null);
+  const { counts } = matchChecklist(readChecklist(other), buildRows(merged));
+  assertEqual(counts.missing, 3, '全部未所持');
+});
+
+await test('所持照合: 同じ番号で名前が違えば警告する（§10-1）', () => {
+  const wrongName = { ...CHECKLIST_SAMPLE, cards: [{ ...CHECKLIST_SAMPLE.cards[0], nameEn: 'Someone Else' }] };
+  const { merged } = mergeCollection(parse('collection.json'), null, null);
+  const { entries } = matchChecklist(readChecklist(wrongName), buildRows(merged));
+  assertEqual(entries[0].match.nameMismatch, true, '名前違い');
+
+  const { entries: ok } = matchChecklist(readChecklist(CHECKLIST_SAMPLE), buildRows(merged));
+  assertEqual(ok.find((item) => item.row.cardNo === '110').match.nameMismatch, false, '名前が合っていれば出さない');
+});
+
+await test('パラレル一覧のコピー: variations だけを出す（§7-3）', () => {
+  const text = parallelsClipboardText(readChecklist(CHECKLIST_SAMPLE));
+  const json = JSON.parse(text);
+  assertEqual(json.variations.length, 4, 'パラレル');
+  assertEqual(json.productKey, '2023-24-panini-prizm-premier-league', 'productKey');
+  assert(!('cards' in json), 'cards[] は入れない（判定チャットに貼るのはパラレルだけ）');
+});
+
+await test('チェックリスト登録: フォームの初期値を作る（§8-2・§10-3）', () => {
+  const checklist = readChecklist(CHECKLIST_SAMPLE);
+  const { values, sourceChecklist } = valuesFromChecklistRow(checklist, checklist.cards[0], 'Gold Prizm');
+
+  assertEqual(values.maker, 'Panini', 'メーカー');
+  assertEqual(values.series, 'Prizm Premier League', 'シリーズ');
+  assertEqual(values.season, '2023-24', 'シーズン');
+  assertEqual(values.cardNo, '110', 'カード番号');
+  assertEqual(values.variation, 'Gold Prizm', '選んだパラレル');
+  assertEqual(values.teamOnCard, 'Borussia Dortmund', 'チーム');
+  assertEqual(values.tier, 'vault', '層は金庫固定');
+  assertEqual(values.priceWatch, true, '価格ウォッチは既定ON');
+  assertEqual(values.serial, '', 'シリアルはユーザーが入れる');
+  assertEqual(sourceChecklist.productKey, '2023-24-panini-prizm-premier-league', '出自');
+  assertEqual(sourceChecklist.cardNo, '110', '出自のカード番号');
+});
+
+await test('チェックリスト登録: 複数選手カードは他の選手を備考に回す（§8-3）', () => {
+  const checklist = readChecklist(CHECKLIST_SAMPLE);
+  const duo = checklist.cards.find((card) => card.cardNo === 'DUO-1');
+  const { values } = valuesFromChecklistRow(checklist, duo, 'Base');
+
+  assert(values.notes.includes('デュアルオート'), 'チェックリストの備考');
+  assert(values.notes.includes('他の選手: Bukayo Saka'), '他の選手');
+  assertEqual(values.features.join(','), 'auto', '特徴');
+});
+
+/* ========== GB定義（段階3 / スキーマ仕様 §9-4） ========== */
+
+const GB_SAMPLE = {
+  schemaVersion: 1,
+  breakId: 'BLZ_2026-09-05_Test',
+  breaker: 'BLEZASIA',
+  productKey: '2023-24-panini-prizm-premier-league',
+  format: 'pyt',
+  boxes: 12,
+  date: '2026-09-05',
+  spots: [
+    {
+      spotId: 'BVB', name: 'Borussia Dortmund', type: 'team', priceYen: 3900,
+      teamIds: ['borussia-dortmund'], playersEn: ['Jude Bellingham'],
+    },
+    {
+      spotId: 'OTHER', name: 'Nowhere United', type: 'team', priceYen: 1000,
+      teamIds: ['nowhere-united'], playersEn: [],
+    },
+  ],
+  status: 'evaluated',
+  evalReport: 'FCGB/breaks/BLZ_2026-09-05_Test/output/report.md',
+};
+
+await test('GB定義の読み取りと表示名', () => {
+  const gb = readGb(GB_SAMPLE);
+  assertEqual(gb.spots.length, 2, 'スポット');
+  assertEqual(formatLabel(gb.format), 'PYT（チーム選択）', '形式');
+  assertEqual(gbStatusLabel(gb.status), '検討のみ', '状態');
+  assertEqual(spotTypeLabel('team'), 'チーム', '種別');
+  // 知らない値はそのまま見せる（黙って消さない）
+  assertEqual(formatLabel('hobby_full_case'), 'hobby_full_case', '知らない形式');
+  assertEqual(readGb(null).spots.length, 0, '中身なし');
+});
+
+await test('GB: スポットのチームを teams.json で解決する', () => {
+  const gb = readGb(GB_SAMPLE);
+  const known = spotTeams(TEAM_INDEX, gb.spots[0]);
+  assertEqual(known[0].label, 'ボルシア・ドルトムント', '日本語名');
+  assertEqual(known[0].known, true, '解決できた');
+
+  // teams.json に無いIDは、そのまま出して「解決できていない」と分かるようにする
+  const unknown = spotTeams(TEAM_INDEX, gb.spots[1]);
+  assertEqual(unknown[0].label, 'nowhere-united', 'IDのまま');
+  assertEqual(unknown[0].known, false, '解決できていない');
+});
+
+await test('GB: gbRef の付いたカードを拾い、スポットに割り当てる', () => {
+  const base = parse('collection.json');
+  const withGb = {
+    ...base,
+    cards: base.cards.map((card) => (card.id === 'c-20260811-k3f'
+      ? { ...card, gbRef: 'BLZ_2026-09-05_Test' }
+      : { ...card, gbRef: null })),
+  };
+  const rows = buildRows(mergeCollection(withGb, null, null).merged);
+  const gb = readGb(GB_SAMPLE);
+
+  assertEqual(cardsFromBreak(gb.breakId, rows).length, 1, 'このGBのカード');
+  assertEqual(cardsFromBreak('ほかのGB', rows).length, 0, '別のGB');
+
+  const { spots, unassigned } = assignCardsToSpots(gb, TEAM_INDEX, rows);
+  // プリント時チームが Borussia Dortmund なので BVB のスポットに付く
+  assertEqual(spots[0].rows.length, 1, 'チームで割り当て');
+  assertEqual(spots[0].rows[0].card.id, 'c-20260811-k3f', 'そのカード');
+  assertEqual(spots[1].rows.length, 0, '別のスポット');
+  assertEqual(unassigned.length, 0, '取りこぼしなし');
+});
+
+await test('GB: どのスポットにも結び付かないカードは必ず残す', () => {
+  const base = parse('collection.json');
+  // 2枚目（Brighton）は GB_SAMPLE のどのスポットにも当たらない
+  const withGb = {
+    ...base,
+    cards: base.cards.map((card) => ({ ...card, gbRef: 'BLZ_2026-09-05_Test' })),
+  };
+  const rows = buildRows(mergeCollection(withGb, null, null).merged);
+  const { unassigned } = assignCardsToSpots(readGb(GB_SAMPLE), TEAM_INDEX, rows);
+
+  assertEqual(unassigned.length, 1, '割り当てられなかったカード');
+  assertEqual(unassigned[0].card.id, 'c-20260812-m7q', 'そのカード');
+});
+
+await test('参照データのパス', () => {
+  assertEqual(checklistPath('2023-24-panini-prizm-premier-league'),
+    'checklists/2023-24-panini-prizm-premier-league.json', 'チェックリスト');
+  assertEqual(gbPath('BLZ_2026-09-05_Test'), 'gb/BLZ_2026-09-05_Test.json', 'GB');
+});
 
 /* ========== 実データを実際に描画して目視確認 ========== */
 

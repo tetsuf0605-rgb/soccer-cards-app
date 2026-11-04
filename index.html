@@ -21,13 +21,17 @@
 <body>
 
 <header class="appbar">
-  <h1 class="appbar__title">トレカ所持リスト</h1>
+  <!-- ボタンが5つ並ぶので、ホーム画面のアイコン名（apple-mobile-web-app-title）と同じ短い名前にする -->
+  <h1 class="appbar__title">トレカリスト</h1>
   <div class="appbar__actions">
     <button type="button" id="btn-import" class="iconbtn" title="取り込み">
       <span aria-hidden="true">＋</span><span class="sr-only">カードを取り込む</span>
     </button>
     <button type="button" id="btn-targets" class="iconbtn" title="狙い選手" aria-expanded="false">
       <span aria-hidden="true">★</span><span class="sr-only">狙い選手</span>
+    </button>
+    <button type="button" id="btn-library" class="iconbtn" title="製品・GB" aria-expanded="false">
+      <span aria-hidden="true">▤</span><span class="sr-only">製品とGB</span>
     </button>
     <button type="button" id="btn-reload" class="iconbtn" title="再読込">
       <span aria-hidden="true">↻</span><span class="sr-only">再読込</span>
@@ -129,6 +133,39 @@
     </div>
     <div id="targets-confirm"></div>
     <p id="targets-message" class="message" role="status" aria-live="polite"></p>
+  </section>
+
+  <!-- ===== 製品・GB の一覧（参照データ。スキーマ仕様 §9-3・§9-4） ===== -->
+  <section id="view-library" class="view" hidden>
+    <button type="button" id="btn-library-back" class="btn btn--ghost btn--back">← 一覧へ</button>
+
+    <div id="library-tabs" class="segmented segmented--wide" role="group" aria-label="参照データの種類"></div>
+    <p id="library-message" class="message" role="status" aria-live="polite"></p>
+    <ul id="library-list" class="library"></ul>
+  </section>
+
+  <!-- ===== チェックリスト閲覧・所持照合（写真判定運用仕様 §7-3・スキーマ仕様 §10） ===== -->
+  <section id="view-checklist" class="view" hidden>
+    <button type="button" id="btn-checklist-back" class="btn btn--ghost btn--back">← 製品・GBへ</button>
+
+    <div id="checklist-head"></div>
+    <div class="actions">
+      <button type="button" id="btn-copy-parallels" class="btn btn--primary">パラレル一覧をコピー</button>
+    </div>
+    <p id="checklist-copy-message" class="message" role="status" aria-live="polite"></p>
+
+    <h2 class="section-title">所持照合</h2>
+    <div id="checklist-filters" class="chips"></div>
+    <p id="checklist-message" class="message" role="status" aria-live="polite"></p>
+    <ul id="checklist-cards" class="checklist"></ul>
+  </section>
+
+  <!-- ===== GBビュー（スキーマ仕様 §9-4） ===== -->
+  <section id="view-gb" class="view" hidden>
+    <button type="button" id="btn-gb-back" class="btn btn--ghost btn--back">← 製品・GBへ</button>
+    <div id="gb-head"></div>
+    <div id="gb-body"></div>
+    <p id="gb-message" class="message" role="status" aria-live="polite"></p>
   </section>
 
   <!-- ===== 詳細 ===== -->

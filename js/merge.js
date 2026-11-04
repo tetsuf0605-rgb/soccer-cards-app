@@ -3,16 +3,20 @@
  *
  * collection.json（台帳本体）に、cowork所有の2ファイルを重ねる。
  * エントリがあればオーバーレイ側を優先する。
- *   cards[].price / priceHistory          ← prices.json
+ *   cards[].price / priceHistory / estimate ← prices.json
  *   players[].currentTeam / status / birthDate / infoUpdatedAt / careerHistory ← players_info.json
+ *
+ * price は実測があるときだけ差し替える。prices.json の大半は推定（estimate）だけを
+ * 持つエントリで、それで price を上書きすると台帳の値まで消える（スキーマ仕様 §9-7）。
  *
  * birthDate は年齢表示・年齢ソートの元（スキーマ仕様 §1「年齢はデータに持たない」）。
  * careerHistory は在籍経験での絞り込みと選手欄の表示に使う（同 §9-5）。どちらも
  * collection.json 側には持たないので、オーバーレイに無い選手では欠けたままになる。
  *
- * 戻り値の merged はスキーマ仕様の完全形をそのまま保つ（余計なフィールドを足さない）。
- * エクスポートはこれをそのまま書き出せる。careerHistory は collection.json の
- * players に持たない項目なので merged には入れず、career（選手ID→履歴）で別に返す。
+ * 戻り値の merged はスキーマ仕様の完全形に `cards[].estimate` だけを足した形。
+ * estimate は表示とソートで毎行使うので行に載せ、エクスポートの直前で落とす
+ * （export.js）。careerHistory は使う場所が限られるので merged には入れず、
+ * career（選手ID→履歴）で別に返す。
  * 「どの値がオーバーレイ由来か」もUI表示用に sources で別に返す。
  */
 
@@ -60,13 +64,32 @@ export function mergeCollection(collection, prices, playersInfo) {
     if (!entry || typeof entry !== 'object') return copy(card);
 
     const merged = copy(card);
-    merged.price = {
-      current: entry.current ?? null,
-      checkedAt: entry.checkedAt ?? null,
-      source: entry.source ?? null,
-    };
-    merged.priceHistory = Array.isArray(entry.history) ? entry.history.map(copy) : [];
-    sources.cards.add(card.id);
+    let touched = false;
+
+    // 実測（current / checkedAt / source / history）があるときだけ price を差し替える。
+    // 推定だけのエントリで差し替えると price が {current: null, ...} になり、
+    // 台帳に手入力した価格まで消してしまう（prices.json の大半は推定のみ）
+    if (typeof entry.current === 'number') {
+      merged.price = {
+        current: entry.current,
+        checkedAt: entry.checkedAt ?? null,
+        source: entry.source ?? null,
+      };
+      touched = true;
+    }
+    if (Array.isArray(entry.history) && entry.history.length > 0) {
+      merged.priceHistory = entry.history.map(copy);
+      touched = true;
+    }
+
+    // 推定価格（スキーマ仕様 §9-7）。実測とは別フィールドで、history には積まない。
+    // collection.json のカードには無い項目なので、エクスポートでは落とす（export.js）
+    if (entry.estimate && typeof entry.estimate === 'object') {
+      merged.estimate = copy(entry.estimate);
+      touched = true;
+    }
+
+    if (touched) sources.cards.add(card.id);
     return merged;
   });
 
