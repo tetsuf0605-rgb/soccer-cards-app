@@ -68,10 +68,15 @@ const els = {
   notes: document.getElementById('ig-notes'),
 
   tier: document.getElementById('ig-tier'),
+  tierField: document.getElementById('ig-tier-field'),
+  tierNote: document.getElementById('ig-tier-note'),
   storageType: document.getElementById('ig-storage-type'),
+  storageBinder: document.getElementById('ig-storage-binder'),
   storageNameField: document.getElementById('ig-storage-name-field'),
   storageName: document.getElementById('ig-storage-name'),
   priceWatch: document.getElementById('ig-pricewatch'),
+  gbRef: document.getElementById('ig-gbref'),
+  gbRefNote: document.getElementById('ig-gbref-note'),
   price: document.getElementById('ig-price'),
   priceNote: document.getElementById('ig-price-note'),
 
@@ -115,7 +120,13 @@ function syncPaste() {
   els.paste.hidden = !(state.mode === 'ingest' && els.form.hidden);
 }
 
-/** ボタンの文言と、モードでしか使わない部品の出し入れ。 */
+/**
+ * ボタンの文言と、モードでしか使わない部品の出し入れ。
+ *
+ * 新規登録では層を選ばせず常に金庫、収納はマグネット/トップローダーの2択
+ * （写真判定運用仕様 §7-1・スキーマ仕様 §5-1）。編集では既存のギャラリー・
+ * バインダーのカードを扱うので、どちらも選べるようにする（同 §5-2）。
+ */
 export function setMode(mode) {
   state.mode = mode;
   const ingest = mode === 'ingest';
@@ -123,7 +134,38 @@ export function setMode(mode) {
   els.save.textContent = ingest ? '保存する' : '変更を保存';
   els.cancel.textContent = ingest ? '取り込みを中止' : '編集をやめる';
   els.back.textContent = ingest ? '← 一覧へ' : '← 詳細へ';
+
+  els.tierField.hidden = ingest;
+  els.tierNote.hidden = !ingest;
+  els.storageBinder.hidden = ingest;
+  els.storageBinder.disabled = ingest;
+
   syncPaste();
+}
+
+/**
+ * gbRef の選択肢を入れ替える（gb/ のファイル一覧。スキーマ仕様 §9-4）。
+ * まだ1件も無ければ「指定しない」だけにして、理由を注記に出す。
+ *
+ * @param {Array<{key: string}>} entries listJsonDirectory の結果
+ */
+export function setGbOptions(entries) {
+  const keys = (entries ?? []).map((entry) => entry.key);
+  const none = document.createElement('option');
+  none.value = '';
+  none.textContent = '指定しない';
+
+  els.gbRef.replaceChildren(none, ...keys.map((key) => {
+    const option = document.createElement('option');
+    option.value = key;
+    option.textContent = key;
+    return option;
+  }));
+
+  els.gbRef.disabled = keys.length === 0;
+  els.gbRefNote.textContent = keys.length === 0
+    ? 'gb/ にまだ登録がありません（段階3で作ります）。'
+    : 'GBで引いたカードは、該当のブレイクを選ぶと gb/ と結び付きます。';
 }
 
 function fillDatalist(node, values) {
@@ -134,12 +176,26 @@ function fillDatalist(node, values) {
   }));
 }
 
-/** 既存の登録値をオートコンプリートに流し込む（表記寄せ。写真判定運用仕様 §5）。 */
-export function refreshDatalists(collection) {
+/**
+ * 既存の登録値をオートコンプリートに流し込む（表記寄せ。写真判定運用仕様 §5）。
+ *
+ * チームは teams.json の正式名も候補に入れる。teamOnCard / currentTeam は
+ * 正式名に寄せる決まりなので（スキーマ仕様 §4）、まだ1枚も持っていないチームでも
+ * 正式名を選べるほうが揺れが出ない。
+ *
+ * @param {object|null} collection
+ * @param {object|null} [teamIndex] buildTeamIndex の戻り値
+ */
+export function refreshDatalists(collection, teamIndex) {
   const cards = collection?.cards ?? [];
-  for (const field of ['maker', 'series', 'variation', 'teamOnCard', 'season']) {
+  for (const field of ['maker', 'series', 'variation', 'season']) {
     fillDatalist(els.lists[field], collectValues(cards, field));
   }
+
+  const teamNames = new Set(collectValues(cards, 'teamOnCard'));
+  for (const team of teamIndex?.teams ?? []) teamNames.add(team.name);
+  fillDatalist(els.lists.teamOnCard, [...teamNames].sort(new Intl.Collator('en').compare));
+
   fillDatalist(els.lists.binder, collectBinderNames(cards));
   fillDatalist(els.lists.nationality, collectValues(collection?.players ?? [], 'nationality'));
 }
@@ -282,11 +338,13 @@ export function fill(options) {
   for (const [name, box] of Object.entries(featureBoxes)) box.checked = features.includes(name);
   els.featOther.value = features.filter((name) => !KNOWN_FEATURES.includes(name)).join(', ');
 
-  els.tier.value = values.tier ?? 'gallery';
-  els.storageType.value = values.storageType ?? 'binder';
+  // 新規登録は常に金庫。編集では台帳の値をそのまま出す
+  els.tier.value = options.mode === 'ingest' ? 'vault' : (values.tier ?? 'vault');
+  els.storageType.value = values.storageType ?? 'toploader';
   els.storageName.value = values.storageName ?? '';
   els.priceWatch.checked = Boolean(values.priceWatch);
   els.price.value = typeof values.price === 'number' ? String(values.price) : '';
+  syncGbRef(values.gbRef ?? '');
   syncStorageName();
 
   els.priceNote.textContent = options.priceNote ?? '';
@@ -299,6 +357,25 @@ export function fill(options) {
 
 function syncStorageName() {
   els.storageNameField.hidden = els.storageType.value !== 'binder';
+}
+
+/**
+ * gbRef に値を入れる。
+ *
+ * 台帳に入っている break_id が gb/ の一覧に無いこともある（GBの定義ファイルを
+ * まだ作っていない場合）。そのときは選択肢に足してから選ぶ — 編集で保存した
+ * だけで値が消えるのを防ぐ。
+ */
+function syncGbRef(value) {
+  if (value && !Array.from(els.gbRef.options).some((option) => option.value === value)) {
+    const option = document.createElement('option');
+    option.value = value;
+    option.textContent = `${value}（gb/ に未登録）`;
+    els.gbRef.append(option);
+  }
+  els.gbRef.value = value;
+  // 値が入っているなら、gb/ が空でも選び直せるようにしておく
+  els.gbRef.disabled = els.gbRef.options.length <= 1;
 }
 
 export function hide() {
@@ -406,10 +483,12 @@ export function read() {
         serial: els.serial.value,
         features: readFeatures(),
         teamOnCard: els.team.value,
-        tier: els.tier.value,
+        // 新規登録では選ばせないので、フォームの値ではなく固定値を返す
+        tier: state.mode === 'ingest' ? 'vault' : els.tier.value,
         storageType: els.storageType.value,
         storageName: els.storageName.value,
         priceWatch: els.priceWatch.checked,
+        gbRef: els.gbRef.value,
         price,
         notes: els.notes.value,
       },

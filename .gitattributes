@@ -1,3 +1,5 @@
 # GitHub Pages でそのまま配信される静的ファイル群。改行はLFに固定する。
 * text=auto eol=lf
 *.png binary
+*.jpg binary
+*.jpeg binary

@@ -1,30 +1,48 @@
 /**
  * エントリポイント。
  *
- * できること: 接続設定、3ファイルの取得とオーバーレイマージ、一覧・詳細、
- * 8項目ソート、選手名検索、判定JSONの取り込み、カードの編集・登録解除・
+ * できること: 接続設定、データ3ファイル＋参照データの取得とオーバーレイマージ、
+ * 一覧・詳細、9項目ソート、フリーワード検索、チップ絞り込み、チームテーマ、
+ * 狙い選手（targets.json）の編集、判定JSONの取り込み、カードの編集・登録解除・
  * priceWatch切替（いずれも collection.json へのPUT・409リトライ付き）、
  * マージ済みcollection.jsonのエクスポート、最終取得データのオフライン閲覧。
  */
 import { loadSettings, saveSettings, clearSettings, isConfigured } from './config.js';
-import { fetchAllFiles, commitCollection, DATA_FILES } from './github.js';
+import {
+  fetchAllFiles, commitCollection, commitTargets as commitTargetsFile,
+  DATA_FILES, REF_FILES, REF_DIRS,
+} from './github.js';
 import { mergeCollection } from './merge.js';
-import { buildRows, filterRows, sortRows, findSortOption, SORT_OPTIONS, DEFAULT_SORT_ID } from './query.js';
-import { el, setMessage, buildCardList, buildDetail, buildFileStat } from './render.js';
+import {
+  buildRows, filterRows, applyChips, sortRows, findSortOption,
+  defaultFilters, SORT_OPTIONS, DEFAULT_SORT_ID,
+} from './query.js';
+import { buildTeamIndex } from './refdata.js';
+import { el, setMessage, buildCardList, buildDetail, buildFileStat, buildDirStat } from './render.js';
 import { createIngestForm } from './ingestform.js';
 import { createEditForm } from './editform.js';
+import { createFilterBar } from './chips.js';
+import { createTargetsView } from './targets.js';
+import { setGbOptions } from './cardform.js';
+import { applyTeamTheme } from './theme.js';
 import { askConfirm, closeConfirm } from './confirm.js';
 import { removeCard, replaceCard } from './ingest.js';
 import { loadSnapshot, saveSnapshot, clearSnapshot } from './cache.js';
 import { buildExport, canShareFile, shareFile, downloadFile } from './export.js';
 
+/** targets.json が未作成のときの土台（初回PUTはこれに1件足したものになる）。 */
+const EMPTY_TARGETS = { schemaVersion: 1, targets: [] };
+
 const els = {
   reload: document.getElementById('btn-reload'),
   settingsToggle: document.getElementById('btn-settings'),
   importToggle: document.getElementById('btn-import'),
+  targetsToggle: document.getElementById('btn-targets'),
+  targetsBack: document.getElementById('btn-targets-back'),
   viewList: document.getElementById('view-list'),
   viewDetail: document.getElementById('view-detail'),
   viewForm: document.getElementById('view-form'),
+  viewTargets: document.getElementById('view-targets'),
   viewSettings: document.getElementById('view-settings'),
   search: document.getElementById('input-search'),
   sortSelect: document.getElementById('select-sort'),
@@ -62,11 +80,20 @@ const state = {
   collection: null,
   /** cowork所有の2ファイル。取得できなかったものは null */
   overlays: { prices: null, playersInfo: null },
+  /**
+   * 参照データ（スキーマ仕様 §9）。collection.json にはマージしない。
+   * teams / targets は中身とsha、checklists / gb はファイル一覧だけ持つ。
+   */
+  refs: { teams: null, targets: null, checklists: [], gb: [] },
+  /** teams.json の索引。取得前・未作成でも使える空の索引で始める */
+  teamIndex: buildTeamIndex(null),
   rows: [],
   sources: { cards: new Set(), players: new Set() },
   sortId: DEFAULT_SORT_ID,
   desc: false,
   query: '',
+  /** チップ絞り込みの状態。既定はギャラリー非表示（スキーマ仕様 §5-1） */
+  filters: defaultFilters(),
   /** 表示中のデータをGitHubから取れた時刻（ISO）。キャッシュ表示のときは取得当時の時刻 */
   fetchedAt: '',
   /**
@@ -81,27 +108,77 @@ const state = {
 
 /** 台帳＋オーバーレイから表示用の行を作り直す。 */
 function applyMerge() {
-  const { merged, sources } = mergeCollection(
+  const { merged, sources, career } = mergeCollection(
     state.collection?.json ?? null,
     state.overlays.prices,
     state.overlays.playersInfo,
   );
-  state.rows = buildRows(merged);
+  state.rows = buildRows(merged, career);
   state.sources = sources;
 }
 
-function visibleRows() {
-  return sortRows(filterRows(state.rows, state.query), state.sortId, state.desc);
+/** 参照データから索引を作り直す（teams.json / gb の一覧が差し替わったとき）。 */
+function applyRefs() {
+  state.teamIndex = buildTeamIndex(state.refs.teams?.json ?? null);
+  setGbOptions(state.refs.gb);
 }
+
+/** フリーワード検索だけを当てた行。 */
+function searchedRows() {
+  return filterRows(state.rows, state.query, state.teamIndex);
+}
+
+/**
+ * チーム以外の条件を当てた行。
+ * チップに出すチームと枚数はこれを母集団にして数える（いま見ている条件の中で
+ * どのチームが何枚あるか、が分かるように）。
+ */
+function facetRows() {
+  return applyChips(searchedRows(), { ...state.filters, teams: [] }, state.teamIndex);
+}
+
+function visibleRows() {
+  const filtered = applyChips(searchedRows(), state.filters, state.teamIndex);
+  return sortRows(filtered, state.sortId, state.desc);
+}
+
+/**
+ * チームを1つだけ選んでいる間は、そのチームのテーマに切り替える
+ * （スキーマ仕様 §1。複数選択時・未選択時は既定テーマ）。
+ */
+function syncTeamTheme() {
+  const selected = state.filters.teams ?? [];
+  const team = selected.length === 1 ? state.teamIndex.byId.get(selected[0]) : null;
+  applyTeamTheme(team ?? null);
+}
+
+/** チップ絞り込みのUI。状態はこのモジュールが持ち、描画と操作だけ任せる。 */
+const filterBar = createFilterBar({
+  getFilters: () => state.filters,
+  getTeamIndex: () => state.teamIndex,
+  getFacetRows: facetRows,
+  onChange: (next) => {
+    state.filters = next;
+    renderList();
+  },
+  onReset: () => {
+    state.filters = defaultFilters();
+    renderList();
+  },
+});
 
 function renderList() {
   const rows = visibleRows();
   els.cardList.replaceChildren(...buildCardList(rows));
+  filterBar.render();
+  syncTeamTheme();
 
   if (state.rows.length === 0) {
     setMessage(els.listMessage, 'カードが登録されていません。');
   } else if (rows.length === 0) {
-    setMessage(els.listMessage, `「${state.query}」に一致する選手のカードはありません。`);
+    setMessage(els.listMessage, state.query
+      ? `「${state.query}」と絞り込みに一致するカードはありません。`
+      : '絞り込みに一致するカードはありません。');
   } else if (rows.length === state.rows.length) {
     setMessage(els.listMessage, `${rows.length}枚`);
   } else {
@@ -121,6 +198,10 @@ function showFetchStatus(result) {
     buildFileStat(DATA_FILES.collection, { ok: true, ...result.collection }),
     buildFileStat(DATA_FILES.prices, result.prices),
     buildFileStat(DATA_FILES.playersInfo, result.playersInfo),
+    buildFileStat(REF_FILES.teams, result.teams),
+    buildFileStat(REF_FILES.targets, result.targets),
+    buildDirStat(REF_DIRS.checklists, result.checklists),
+    buildDirStat(REF_DIRS.gb, result.gb),
     el('p', 'message', `最終取得: ${formatFetchedAt(result.fetchedAt)}`),
   );
 }
@@ -136,9 +217,11 @@ function showSnapshot() {
 
   state.collection = snapshot.collection;
   state.overlays = snapshot.overlays;
+  state.refs = snapshot.refs ?? { teams: null, targets: null, checklists: [], gb: [] };
   state.fetchedAt = snapshot.fetchedAt;
   state.fresh = false;
   applyMerge();
+  applyRefs();
   renderList();
   updateWriteAvailability();
   return true;
@@ -166,9 +249,17 @@ async function load() {
       prices: result.prices.ok ? result.prices.json : null,
       playersInfo: result.playersInfo.ok ? result.playersInfo.json : null,
     };
+    // 参照データは未作成（404）でも ok: true・空の中身で返ってくる
+    state.refs = {
+      teams: result.teams.ok ? { json: result.teams.json, sha: result.teams.sha } : null,
+      targets: result.targets.ok ? { json: result.targets.json, sha: result.targets.sha } : null,
+      checklists: result.checklists.ok ? result.checklists.entries : [],
+      gb: result.gb.ok ? result.gb.entries : [],
+    };
     state.fetchedAt = result.fetchedAt;
     state.fresh = true;
     applyMerge();
+    applyRefs();
 
     showFetchStatus(result);
     renderList();
@@ -178,6 +269,7 @@ async function load() {
     const cached = saveSnapshot(settings, {
       collection: state.collection,
       overlays: state.overlays,
+      refs: state.refs,
       fetchedAt: state.fetchedAt,
     });
     if (!cached) {
@@ -190,11 +282,12 @@ async function load() {
     const missing = [
       result.prices.ok ? null : DATA_FILES.prices,
       result.playersInfo.ok ? null : DATA_FILES.playersInfo,
+      result.teams.ok ? null : REF_FILES.teams,
     ].filter(Boolean);
     if (missing.length > 0) {
       setMessage(
         els.listMessage,
-        `${els.listMessage.textContent}｜${missing.join(' / ')} を取得できず、価格・所属が古い可能性があります。`,
+        `${els.listMessage.textContent}｜${missing.join(' / ')} を取得できず、価格・所属・チーム絞り込みが欠けている可能性があります。`,
         'error',
       );
     }
@@ -243,6 +336,8 @@ function updateWriteAvailability() {
   els.edit.disabled = !allowed;
   els.watch.disabled = !allowed;
   els.delete.disabled = !allowed;
+  // 狙い選手は開いたままオフラインになることがあるので、その場で押せなくする
+  if (!els.viewTargets.hidden) targetsView.refresh();
 
   const showBanner = Boolean(state.collection) && !allowed;
   els.offlineBanner.hidden = !showBanner;
@@ -260,9 +355,11 @@ function showView(name) {
   els.viewList.hidden = name !== 'list';
   els.viewDetail.hidden = name !== 'detail';
   els.viewForm.hidden = name !== 'form';
+  els.viewTargets.hidden = name !== 'targets';
   els.viewSettings.hidden = name !== 'settings';
   els.settingsToggle.setAttribute('aria-expanded', String(name === 'settings'));
   els.importToggle.setAttribute('aria-expanded', String(name === 'form'));
+  els.targetsToggle.setAttribute('aria-expanded', String(name === 'targets'));
 
   if (name === 'settings') {
     els.owner.value = settings.owner;
@@ -288,7 +385,7 @@ function openDetail(cardId, note) {
   }
   detailCardId = cardId;
   closeConfirm(els.detailConfirm);
-  els.detailBody.replaceChildren(buildDetail(row, state.sources));
+  els.detailBody.replaceChildren(buildDetail(row, state.sources, state.teamIndex));
   els.watch.textContent = row.card.priceWatch ? '価格ウォッチを外す' : '価格ウォッチに入れる';
   setMessage(els.detailMessage, note ?? '', note ? 'ok' : undefined);
   showView('detail');
@@ -323,6 +420,7 @@ async function commit(apply) {
 
 const ingestForm = createIngestForm({
   getCollection: () => state.collection,
+  getTeamIndex: () => state.teamIndex,
   commit,
   onExit: (summary) => {
     showView('list');
@@ -345,10 +443,46 @@ function openImport() {
 
 const editForm = createEditForm({
   getCollection: () => state.collection,
+  getTeamIndex: () => state.teamIndex,
   hasPriceOverlay: (cardId) => state.sources.cards.has(cardId),
   commit,
   onDone: (cardId, note) => openDetail(cardId, note),
 });
+
+/* ===== 狙い選手（targets.json） ===== */
+
+/** 未作成でも書けるように、無いときは空の中身・sha なしを返す。 */
+function currentTargets() {
+  return state.refs.targets ?? { json: EMPTY_TARGETS, sha: '' };
+}
+
+/**
+ * targets.json を更新する（保存同期方式仕様 §4）。
+ * collection.json と同じ楽観ロック・409リトライを使う。
+ */
+async function commitTargets(apply) {
+  const result = await commitTargetsFile(settings, currentTargets(), apply);
+  state.refs.targets = { json: result.json, sha: result.sha };
+  return result;
+}
+
+const targetsView = createTargetsView({
+  getTargets: currentTargets,
+  // 所持照合には層に関わらず全カードを使う（ギャラリーで持っていても「所持」）
+  getRows: () => state.rows,
+  commit: commitTargets,
+  canWrite: writesAllowed,
+});
+
+function openTargets() {
+  if (!isConfigured(settings)) {
+    showView('settings');
+    setMessage(els.settingsMessage, '狙い選手の前に owner / repo / PAT を設定してください。', 'error');
+    return;
+  }
+  targetsView.open();
+  showView('targets');
+}
 
 /** 書き込み操作の前提（設定済み・台帳を読み込み済み）を確かめる。 */
 function requireLoaded(action) {
@@ -516,6 +650,13 @@ els.settingsToggle.addEventListener('click', () => {
 
 els.importToggle.addEventListener('click', openImport);
 
+els.targetsToggle.addEventListener('click', () => {
+  if (els.viewTargets.hidden) openTargets();
+  else showView('list');
+});
+
+els.targetsBack.addEventListener('click', () => showView('list'));
+
 els.reload.addEventListener('click', () => {
   ingestForm.close();
   editForm.close();
@@ -611,6 +752,11 @@ els.clear.addEventListener('click', async () => {
   detailCardId = null;
   state.collection = null;
   state.rows = [];
+  state.refs = { teams: null, targets: null, checklists: [], gb: [] };
+  state.filters = defaultFilters();
+  applyRefs();
+  filterBar.setOpen(false);
+  syncTeamTheme();
   state.fetchedAt = '';
   state.fresh = false;
   els.cardList.replaceChildren();
@@ -624,6 +770,9 @@ els.clear.addEventListener('click', async () => {
 
 fillSortOptions();
 updateSortDirLabel();
+// 参照データを取る前でも、空の索引と「gb/ は未登録」の注記で画面が成立するようにする
+applyRefs();
+filterBar.render();
 showView('list');
 els.exportShare.hidden = !canShareFile();
 updateWriteAvailability();

@@ -11,8 +11,11 @@
 
 const STORAGE_KEY = 'soccer-cards:snapshot';
 
-/** 保存形式の版。上げると古いキャッシュは黙って捨てられる。 */
-const SNAPSHOT_VERSION = 1;
+/**
+ * 保存形式の版。上げると古いキャッシュは黙って捨てられる。
+ * v2: 参照データ（teams / targets / checklists・gb のファイル一覧）を追加。
+ */
+const SNAPSHOT_VERSION = 2;
 
 /**
  * 直近の取得結果を保存する。
@@ -20,8 +23,11 @@ const SNAPSHOT_VERSION = 1;
  * owner / repo も一緒に持つ。設定を別のリポジトリに変えたとき、前のリポジトリの
  * 中身を「最終取得」として出さないため。
  *
+ * 参照データも対象（保存同期方式仕様 §4「取得したものはすべて localStorage に
+ * キャッシュ」）。checklists / gb はファイル一覧だけ持ち、中身は持たない。
+ *
  * @param {{owner: string, repo: string}} settings
- * @param {{collection: {json: object, sha: string}, overlays: {prices: object|null, playersInfo: object|null}, fetchedAt: string}} data
+ * @param {{collection: {json: object, sha: string}, overlays: {prices: object|null, playersInfo: object|null}, refs: {teams: {json: object, sha: string}|null, targets: {json: object, sha: string}|null, checklists: Array<object>, gb: Array<object>}, fetchedAt: string}} data
  * @returns {boolean} 保存できたら true（容量オーバーなどで落ちても致命的ではない）
  */
 export function saveSnapshot(settings, data) {
@@ -33,6 +39,10 @@ export function saveSnapshot(settings, data) {
     collection: { json: data.collection.json, sha: data.collection.sha },
     prices: data.overlays.prices ?? null,
     playersInfo: data.overlays.playersInfo ?? null,
+    teams: data.refs?.teams ?? null,
+    targets: data.refs?.targets ?? null,
+    checklists: data.refs?.checklists ?? [],
+    gb: data.refs?.gb ?? [],
   };
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(snapshot));
@@ -48,7 +58,7 @@ export function saveSnapshot(settings, data) {
  * 保存済みキャッシュを返す。無い・壊れている・別リポジトリのものなら null。
  *
  * @param {{owner: string, repo: string}} settings
- * @returns {{fetchedAt: string, collection: {json: object, sha: string}, overlays: {prices: object|null, playersInfo: object|null}}|null}
+ * @returns {{fetchedAt: string, collection: {json: object, sha: string}, overlays: {prices: object|null, playersInfo: object|null}, refs: object}|null}
  */
 export function loadSnapshot(settings) {
   let stored = null;
@@ -70,6 +80,12 @@ export function loadSnapshot(settings) {
     overlays: {
       prices: stored.prices ?? null,
       playersInfo: stored.playersInfo ?? null,
+    },
+    refs: {
+      teams: stored.teams ?? null,
+      targets: stored.targets ?? null,
+      checklists: Array.isArray(stored.checklists) ? stored.checklists : [],
+      gb: Array.isArray(stored.gb) ? stored.gb : [],
     },
   };
 }

@@ -7,7 +7,7 @@
  * 判定側は id / playerId / tier / storage / priceWatch / price / addedAt を出力しない
  * （同 §1）。それらはこのモジュールと取り込みフォームが付与する。
  */
-import { foldText } from './query.js';
+import { foldText, matchKey } from './text.js';
 
 /** 取り込み入力の不備。メッセージはそのままユーザーに見せる。 */
 export class IngestError extends Error {
@@ -61,12 +61,7 @@ function toOptional(value) {
  * 大文字小文字・全角/半角・かな・アクセント記号・区切り記号のゆらぎを吸収する
  * （写真判定運用仕様 §5「大文字小文字・空白ゆらぎ許容」）。
  */
-export function normalizeKey(text) {
-  return foldText(text)
-    .normalize('NFD')
-    .replace(/[\u0300-\u036f]/g, '')
-    .replace(/[\s.,'’`\-_/·・]/g, '');
-}
+export const normalizeKey = matchKey;
 
 /** 姓（最後のトークン）。3文字未満は当てにならないので無視する。 */
 function surnameKey(nameEn) {
@@ -281,6 +276,10 @@ export function buildPlayerRecord(id, input) {
  *
  * 価格を入力した場合だけ price を作る（source は "手動" 固定。写真判定運用仕様 §5）。
  * priceHistory は常に空で始める（蓄積は cowork の担当）。
+ *
+ * sourceChecklist / gbRef はスキーマ仕様 v1.4 §4 の新設フィールド。
+ * sourceChecklist はチェックリスト登録（段階3）でだけ入り、写真判定経由では null。
+ * gbRef は GB で入手したカードに break_id を入れる（フォームで任意入力）。
  */
 export function buildCardRecord(id, playerId, input, date = new Date()) {
   const price = typeof input.price === 'number' && Number.isFinite(input.price)
@@ -308,6 +307,8 @@ export function buildCardRecord(id, playerId, input, date = new Date()) {
     priceHistory: [],
     notes: toText(input.notes),
     addedAt: toIsoDate(date),
+    sourceChecklist: input.sourceChecklist ?? null,
+    gbRef: toOptional(input.gbRef),
   };
 }
 
@@ -422,6 +423,7 @@ export function valuesFromCard(card) {
     priceWatch: Boolean(card.priceWatch),
     price: typeof card.price?.current === 'number' ? card.price.current : undefined,
     notes: card.notes ?? '',
+    gbRef: card.gbRef ?? '',
   };
 }
 
@@ -431,11 +433,13 @@ export function valuesFromCard(card) {
  * 価格は、値が変わったときだけ 手動・当日 で書き換える。変えていなければ
  * 既存の checkedAt / source を残す（cowork が入れた出所を消さない）。
  * priceHistory は cowork の担当なのでそのまま持ち越す。
+ * sourceChecklist は登録時の出自の記録なので、編集では触らず持ち越す。
  */
 export function applyCardEdit(card, playerId, input, date = new Date()) {
   const next = buildCardRecord(card.id, playerId, input, date);
   next.priceHistory = [...(card.priceHistory ?? [])];
   next.addedAt = card.addedAt ?? next.addedAt;
+  next.sourceChecklist = card.sourceChecklist ?? null;
 
   const before = typeof card.price?.current === 'number' ? card.price.current : null;
   const after = typeof next.price?.current === 'number' ? next.price.current : null;

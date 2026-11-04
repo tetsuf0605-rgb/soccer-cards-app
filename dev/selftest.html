@@ -42,11 +42,22 @@
 <script type="module">
 import { FIXTURES } from './fixtures.js';
 import { encodeBase64Utf8, decodeBase64Utf8 } from '../js/base64.js';
-import { fetchAllFiles, getJsonFile, putCollection, commitCollection, DATA_FILES, WRITABLE_PATH } from '../js/github.js';
-import { buildCardList, buildDetail, formatPrice, formatStorage } from '../js/render.js';
+import {
+  fetchAllFiles, getJsonFile, putCollection, putJsonText, commitCollection, commitTargets,
+  listJsonDirectory, DATA_FILES, REF_FILES, REF_DIRS, WRITABLE_PATH, WRITABLE_PATHS,
+} from '../js/github.js';
+import { buildCardList, buildDetail, formatPrice, formatStorage, formatAge } from '../js/render.js';
 import { mergeCollection } from '../js/merge.js';
-import { buildRows, sortRows, filterRows, foldText, SORT_OPTIONS } from '../js/query.js';
-import { stringifyCollection } from '../js/serialize.js';
+import {
+  buildRows, sortRows, filterRows, applyChips, defaultFilters, hasActiveFilters,
+  ageFromBirthDate, searchHaystack, foldText, CHIP_GROUPS, SORT_OPTIONS,
+} from '../js/query.js';
+import { matchKey } from '../js/text.js';
+import {
+  buildTeamIndex, resolveTeam, teamLabel, teamFacets, searchTeamFacets, teamIdsForRow,
+  readTargets, addTarget, removeTarget, describeTargets, formatCareerEntry, TEAM_MODES,
+} from '../js/refdata.js';
+import { stringifyCollection, stringifyTargets } from '../js/serialize.js';
 import {
   parseIngestJson, matchPlayers, searchPlayers, nextPlayerId, makeCardId,
   collectValues, collectBinderNames, buildCardRecord, buildPlayerRecord,
@@ -243,10 +254,24 @@ await test('ネットワーク断はオフライン向けの文言になる', as
 
 /* ========== 責務分担（書き込み対象の固定） ========== */
 
-await test('書き込み可能パスは collection.json だけ', () => {
+await test('書き込み可能パスは collection.json と targets.json だけ', () => {
   assertEqual(WRITABLE_PATH, 'collection.json', 'WRITABLE_PATH');
-  const writers = Object.keys({ ...FIXTURES }).filter((p) => p === WRITABLE_PATH);
-  assertEqual(writers.length, 1, '書き込み対象の数');
+  assertEqual(WRITABLE_PATHS.join(), 'collection.json,targets.json', 'WRITABLE_PATHS');
+  // cowork / PC 所有のファイルは入っていない（保存同期方式仕様 §2・§4）
+  for (const path of [DATA_FILES.prices, DATA_FILES.playersInfo, REF_FILES.teams, 'checklists/x.json']) {
+    assert(!WRITABLE_PATHS.includes(path), `${path} が書き込み対象に入っている`);
+  }
+});
+
+await test('所有者が違うファイルへのPUTは入口で止まる', async () => {
+  for (const path of [DATA_FILES.prices, REF_FILES.teams]) {
+    let message = '';
+    const restore = stubFetch(() => { throw new Error('PUTされてしまった'); });
+    try {
+      await putJsonText(SETTINGS, path, '{}', 'sha', 'should not happen');
+    } catch (error) { message = error.message; } finally { restore(); }
+    assert(message.includes('書き込めません'), `${path}: ${message}`);
+  }
 });
 
 /* ========== オーバーレイマージ ========== */
@@ -325,10 +350,11 @@ function row(card, player) {
   return { card: { id: 'c-' + Math.random().toString(36).slice(2, 5), ...card }, player: player ?? null };
 }
 
-await test('ソート項目はスキーマ仕様§1の8項目そろっている', () => {
-  assertEqual(SORT_OPTIONS.length, 8, '項目数');
+await test('ソート項目はスキーマ仕様§1の9項目そろっている', () => {
+  // v1.3で年齢が増えた（players_info の birthDate から表示時に算出する）
+  assertEqual(SORT_OPTIONS.length, 9, '項目数');
   assertEqual(SORT_OPTIONS.map((o) => o.id).join(','),
-    'name,nationality,price,teamOnCard,currentTeam,status,series,variation', '項目のid');
+    'name,nationality,age,price,teamOnCard,currentTeam,status,series,variation', '項目のid');
 });
 
 await test('ソート: 現在の価格（昇順・降順）', () => {
@@ -611,11 +637,12 @@ const FORM_INPUT = {
   priceWatch: false, price: undefined, notes: '',
 };
 
-await test('buildCardRecord: v1.2のキーが順番どおりに揃う', () => {
+await test('buildCardRecord: v1.4のキーが順番どおりに揃う', () => {
   const card = buildCardRecord('c-20260812-m7q', 'p-0002', FORM_INPUT, new Date(2026, 7, 12));
+  // v1.4で sourceChecklist / gbRef が末尾に増えた（スキーマ仕様 §4）
   assertEqual(Object.keys(card).join(','),
     'id,playerId,maker,series,season,cardNo,variation,serial,features,teamOnCard,'
-    + 'tier,storage,priceWatch,price,priceHistory,notes,addedAt', 'キーの順序');
+    + 'tier,storage,priceWatch,price,priceHistory,notes,addedAt,sourceChecklist,gbRef', 'キーの順序');
   assertEqual(card.maker, 'Panini', '前後の空白は落とす');
   assertEqual(card.variation, 'Base', 'バリエーション既定');
   assertEqual(card.serial, null, '空欄はnull');
@@ -695,7 +722,12 @@ await test('applyCardEdit: id・登録日・価格履歴は持ち越す', () => 
   assertEqual(edited.addedAt, '2026-08-11', '登録日は変えない');
   assertEqual(edited.priceHistory.length, 2, '履歴は持ち越す');
   assertEqual(edited.variation, 'Gold Prizm', '編集した項目');
-  assertEqual(Object.keys(edited).join(','), Object.keys(card).join(','), 'キーの順序');
+  // v1.2のカードを編集すると v1.4 の2フィールドが末尾に足される（どちらもnull）
+  assertEqual(Object.keys(edited).join(','),
+    'id,playerId,maker,series,season,cardNo,variation,serial,features,teamOnCard,'
+    + 'tier,storage,priceWatch,price,priceHistory,notes,addedAt,sourceChecklist,gbRef', 'キーの順序');
+  assertEqual(edited.sourceChecklist, null, '写真判定経由のカードはnull');
+  assertEqual(edited.gbRef, null, 'GB由来でなければnull');
 });
 
 await test('applyCardEdit: 価格を変えなければ出所と確認日を残す', () => {
@@ -1002,16 +1034,503 @@ await test('キャッシュ: 保存分からエクスポートできる（オフ
   assertEqual(file.json.cards.find((c) => c.id === 'c-20260811-k3f').price.current, 13000, '価格');
 }));
 
+/* ========== 参照データ（段階2-B / スキーマ仕様 §9） ========== */
+
+/** teams.json の小さなサンプル（publicリポジトリなので実データは置かない）。 */
+const TEAMS_SAMPLE = {
+  schemaVersion: 1,
+  updatedAt: '2026-11-04',
+  teams: [
+    {
+      id: 'aston-villa', name: 'Aston Villa', nameJa: 'アストン・ヴィラ', kind: 'club',
+      aliases: ['Aston Villa F.C.', 'AVFC', 'Villa'], country: 'イングランド',
+      colors: { primary: '#670E36', secondary: '#95BFE5' }, colorsVerified: false,
+      wallpaper: 'themes/aston-villa.jpg',
+    },
+    {
+      id: 'borussia-dortmund', name: 'Borussia Dortmund', nameJa: 'ボルシア・ドルトムント', kind: 'club',
+      aliases: ['BVB', 'Dortmund'], country: 'ドイツ',
+      colors: { primary: '#FDE100', secondary: '#000000' }, colorsVerified: false, wallpaper: null,
+    },
+    {
+      id: 'brighton-hove-albion', name: 'Brighton & Hove Albion', nameJa: 'ブライトン', kind: 'club',
+      aliases: ['Brighton'], country: 'イングランド',
+      colors: { primary: '#0057B8', secondary: '#FFFFFF' }, colorsVerified: false, wallpaper: null,
+    },
+  ],
+};
+
+const TEAM_INDEX = buildTeamIndex(TEAMS_SAMPLE);
+
+await test('teams索引: 正式名・日本語名・別名のどれでも引ける', () => {
+  assertEqual(resolveTeam(TEAM_INDEX, 'Aston Villa').id, 'aston-villa', '正式名');
+  assertEqual(resolveTeam(TEAM_INDEX, 'アストン・ヴィラ').id, 'aston-villa', '日本語名');
+  assertEqual(resolveTeam(TEAM_INDEX, 'AVFC').id, 'aston-villa', '略称');
+  // 記号・大小文字のゆらぎを吸収する
+  assertEqual(resolveTeam(TEAM_INDEX, 'aston villa f.c.').id, 'aston-villa', '記号ゆれ');
+  assertEqual(resolveTeam(TEAM_INDEX, 'Nowhere United'), null, '未登録');
+  assertEqual(teamLabel(resolveTeam(TEAM_INDEX, 'BVB')), 'ボルシア・ドルトムント', '表示名');
+  assertEqual(matchKey('A.F.C. Bournemouth'), matchKey('AFC Bournemouth'), '突き合わせキー');
+});
+
+await test('teams.json が未作成でも空の索引で動く（404は空扱い）', () => {
+  const empty = buildTeamIndex(null);
+  assertEqual(empty.isEmpty, true, 'isEmpty');
+  assertEqual(resolveTeam(empty, 'Aston Villa'), null, '引けない');
+  assertEqual(teamFacets(empty, [], 'print').length, 0, 'チップも出ない');
+});
+
+await test('listJsonDirectory: .json だけ拾い、未作成は空配列', async () => {
+  const restore = stubFetch((url) => {
+    if (url.endsWith('/contents/gb')) {
+      return {
+        ok: true, status: 200,
+        json: async () => ([
+          { type: 'file', name: 'gb-2026-02.json', path: 'gb/gb-2026-02.json', sha: 's2', size: 10 },
+          { type: 'file', name: 'gb-2026-01.json', path: 'gb/gb-2026-01.json', sha: 's1', size: 10 },
+          { type: 'file', name: 'README.md', path: 'gb/README.md', sha: 's3', size: 10 },
+          { type: 'dir', name: 'old', path: 'gb/old', sha: 's4', size: 0 },
+        ]),
+      };
+    }
+    return errorResponse(404);
+  });
+  let gb;
+  let checklists;
+  try {
+    gb = await listJsonDirectory(SETTINGS, REF_DIRS.gb);
+    checklists = await listJsonDirectory(SETTINGS, REF_DIRS.checklists);
+  } finally { restore(); }
+
+  assertEqual(gb.map((e) => e.key).join(), 'gb-2026-01,gb-2026-02', 'ファイル名順で .json だけ');
+  assertEqual(gb[0].sha, 's1', 'shaも持つ');
+  assertEqual(checklists.length, 0, '未作成（404）は空');
+});
+
+await test('fetchAllFiles: 参照データも取り、未作成は空として続行する', async () => {
+  const restore = stubFetch(allOk);
+  let result;
+  try { result = await fetchAllFiles(SETTINGS); } finally { restore(); }
+
+  // FIXTURES に teams/targets は無いので404 → missing（エラーにしない）
+  assertEqual(result.teams.ok, true, 'teamsはok扱い');
+  assertEqual(result.teams.missing, true, 'teamsはmissing');
+  assertEqual(result.teams.json.teams.length, 0, '空のチームマスタ');
+  assertEqual(result.targets.missing, true, 'targetsもmissing');
+  assertEqual(result.targets.sha, '', '初回PUTのためshaは空');
+  assertEqual(result.checklists.ok, true, 'checklists');
+  assertEqual(result.checklists.entries.length, 0, 'checklistsは0件');
+  assertEqual(result.gb.entries.length, 0, 'gbは0件');
+});
+
+/* ========== 年齢（スキーマ仕様 §1） ========== */
+
+await test('年齢: birthDate から表示時に算出する', () => {
+  const today = new Date(2026, 10, 4); // 2026-11-04
+  assertEqual(ageFromBirthDate('2003-06-29', today), 23, '誕生日を過ぎている');
+  assertEqual(ageFromBirthDate('2003-12-01', today), 22, '誕生日前');
+  assertEqual(ageFromBirthDate('2026-11-04', today), 0, '当日生まれ');
+  assertEqual(ageFromBirthDate(null, today), null, '未設定');
+  assertEqual(ageFromBirthDate('', today), null, '空文字');
+  assertEqual(ageFromBirthDate('2003-02-30', today), null, '存在しない日付');
+  assertEqual(ageFromBirthDate('むかし', today), null, '数字でない');
+});
+
+await test('年齢ソート: 若い順に並び、未設定は末尾', () => {
+  const base = parse('collection.json');
+  const withBirth = {
+    ...base,
+    players: base.players.map((p, i) => ({ ...p, birthDate: i === 0 ? '2003-06-29' : null })),
+  };
+  const rows = sortRows(buildRows(withBirth), 'age', false);
+  assertEqual(rows[0].player.id, 'p-0001', '年齢のある選手が先頭');
+  assertEqual(ageFromBirthDate(rows[rows.length - 1].player.birthDate), null, '未設定は末尾');
+  // 降順でも未設定は末尾（探しているものが下に埋もれないように）
+  const desc = sortRows(buildRows(withBirth), 'age', true);
+  assertEqual(ageFromBirthDate(desc[desc.length - 1].player.birthDate), null, '降順でも末尾');
+  assert(SORT_OPTIONS.some((o) => o.id === 'age'), 'ソート項目に年齢がある');
+});
+
+await test('年齢の表示文', () => {
+  assertEqual(formatAge('2003-06-29'), `${ageFromBirthDate('2003-06-29')}歳`, '「n歳」');
+  assertEqual(formatAge(null), null, '未設定は出さない');
+});
+
+/* ========== マージ: birthDate / careerHistory（保存同期方式仕様 §3） ========== */
+
+const PLAYERS_INFO_WITH_CAREER = () => {
+  const info = parse('players_info.json');
+  return {
+    ...info,
+    players: {
+      ...info.players,
+      'p-0001': {
+        ...info.players['p-0001'],
+        birthDate: '2003-06-29',
+        careerHistory: [
+          { team: 'Borussia Dortmund', from: '2020', to: '2023', loan: false },
+          { team: 'Real Madrid', from: '2023', to: null, loan: false },
+        ],
+      },
+    },
+  };
+};
+
+await test('マージ: birthDate は players に入り、careerHistory は入らない', () => {
+  const { merged, career } = mergeCollection(
+    parse('collection.json'), parse('prices.json'), PLAYERS_INFO_WITH_CAREER());
+
+  const player = merged.players.find((p) => p.id === 'p-0001');
+  assertEqual(player.birthDate, '2003-06-29', 'birthDateはマージする');
+  assert(!('careerHistory' in player), 'careerHistory は collection.json の players に持たない');
+  assertEqual(career.get('p-0001').length, 2, 'careerは別で返る');
+  assertEqual(career.has('p-0002'), false, '履歴が無い選手は入らない');
+});
+
+await test('エクスポートに careerHistory を混ぜない', () => {
+  const file = buildExport(parse('collection.json'), {
+    prices: parse('prices.json'), playersInfo: PLAYERS_INFO_WITH_CAREER(),
+  }, EXPORT_DATE);
+  assert(!file.text.includes('careerHistory'), 'エクスポートに careerHistory が出ている');
+  assert(file.text.includes('"birthDate"'), 'birthDate は出る');
+});
+
+await test('在籍履歴の表示文（粒度は年・ローンを示す）', () => {
+  assertEqual(formatCareerEntry({ team: 'Aston Villa', from: '2020', to: '2023', loan: false }, TEAM_INDEX),
+    '2020–2023　アストン・ヴィラ', '通常');
+  assertEqual(formatCareerEntry({ team: 'Aston Villa', from: '2023', to: null, loan: true }, TEAM_INDEX),
+    '2023–現在　アストン・ヴィラ（ローン）', '最新・ローン');
+  assertEqual(formatCareerEntry({ team: 'Unknown FC', from: '2019', to: '2020' }, TEAM_INDEX),
+    '2019–2020　Unknown FC', 'teams.json に無いチームはそのまま');
+});
+
+/* ========== フリーワード検索（スキーマ仕様 §1） ========== */
+
+const SEARCH_ROWS = () => {
+  const { merged, career } = mergeCollection(
+    parse('collection.json'), parse('prices.json'), PLAYERS_INFO_WITH_CAREER());
+  return buildRows(merged, career);
+};
+
+await test('検索: 選手・カード両方の項目に当たる', () => {
+  const rows = SEARCH_ROWS();
+  assertEqual(filterRows(rows, 'ベリンガム').length, 1, '選手名（カナ）');
+  assertEqual(filterRows(rows, 'bellingham').length, 1, 'nameEn（大文字小文字無視）');
+  assertEqual(filterRows(rows, 'べりんがむ').length, 1, 'かな入力');
+  assertEqual(filterRows(rows, 'イングランド').length, 1, '国籍');
+  assertEqual(filterRows(rows, 'Real Madrid').length, 1, '現所属チーム');
+  assertEqual(filterRows(rows, 'Dortmund').length, 1, 'プリント時チーム');
+  assertEqual(filterRows(rows, 'Prizm').length, 1, 'シリーズ');
+  assertEqual(filterRows(rows, '23/99').length, 1, 'シリアル');
+  assertEqual(filterRows(rows, 'Panini').length, 2, 'メーカー（サンプルは2枚ともPanini）');
+  assertEqual(filterRows(rows, 'BINDER-A').length, 1, '収納先の名前');
+  assertEqual(filterRows(rows, 'Kaboom').length, 1, 'バリエーション');
+  assertEqual(filterRows(rows, '2023-24').length, 1, 'シーズン');
+});
+
+await test('検索: 複数語はAND・ヒット単位はカード', () => {
+  const rows = SEARCH_ROWS();
+  assertEqual(filterRows(rows, 'ベリンガム Prizm').length, 1, '両方当たる');
+  assertEqual(filterRows(rows, 'ベリンガム 三笘').length, 0, '別の選手とのANDは0件');
+  assertEqual(filterRows(rows, '   ').length, rows.length, '空白だけなら絞り込まない');
+});
+
+await test('検索: teams.json の aliases でも当たる（v1.4）', () => {
+  const rows = SEARCH_ROWS();
+  // 「BVB」は Borussia Dortmund の別名。台帳のどの文字列にも出てこない
+  assertEqual(filterRows(rows, 'BVB', null).length, 0, 'teams.jsonなしでは当たらない');
+  assertEqual(filterRows(rows, 'BVB', TEAM_INDEX).length, 1, 'aliasesで当たる');
+  assertEqual(filterRows(rows, 'ボルシア・ドルトムント', TEAM_INDEX).length, 1, '日本語名でも当たる');
+  // 現所属（Brighton & Hove Albion）側の別名でも当たる
+  assertEqual(filterRows(rows, 'ブライトン', TEAM_INDEX).length, 1, '現所属チームの日本語名');
+});
+
+await test('検索の照合文字列は項目をまたいで繋がらない', () => {
+  const row = SEARCH_ROWS()[0];
+  const haystack = searchHaystack(row, TEAM_INDEX);
+  // 項目はNUL区切り。隣り合う項目をまたいだ部分一致が起きないこと
+  assert(haystack.includes('\u0000'), '区切りが入っていない');
+  assertEqual(filterRows([row], 'paniniprizm', TEAM_INDEX).length, 0,
+    'メーカーとシリーズを繋げた文字列に当たってしまっている');
+});
+
+/* ========== チップ絞り込み（スキーマ仕様 §1・§5-1） ========== */
+
+await test('チップ: 既定はギャラリー非表示（金庫のみ）', () => {
+  const base = parse('collection.json');
+  const rows = buildRows({
+    ...base,
+    cards: [base.cards[0], { ...base.cards[1], tier: 'gallery' }],
+  });
+  const shown = applyChips(rows, defaultFilters(), TEAM_INDEX);
+  assertEqual(shown.length, 1, '金庫だけ出る');
+  assertEqual(shown[0].card.tier, 'vault', '出たのは金庫');
+
+  // 層チップでギャラリーを足せば見える（トグル相当）
+  assertEqual(applyChips(rows, { ...defaultFilters(), tier: ['vault', 'gallery'] }, TEAM_INDEX).length, 2, '両方');
+  assertEqual(applyChips(rows, { ...defaultFilters(), tier: ['gallery'] }, TEAM_INDEX)[0].card.tier, 'gallery', 'ギャラリーだけ');
+  assertEqual(applyChips(rows, { ...defaultFilters(), tier: [] }, TEAM_INDEX).length, 2, '空の区分は条件なし');
+});
+
+await test('チップ: 同一区分内はOR・区分をまたぐとAND', () => {
+  const rows = SEARCH_ROWS();
+  const all = { ...defaultFilters(), tier: [] };
+
+  // 1枚目: patch / toploader / シリアルあり / watch中
+  assertEqual(applyChips(rows, { ...all, features: ['patch'] }, TEAM_INDEX).length, 1, 'patch');
+  assertEqual(applyChips(rows, { ...all, features: ['patch', 'rookie'] }, TEAM_INDEX).length,
+    applyChips(rows, { ...all, features: ['patch'] }, TEAM_INDEX).length
+    + applyChips(rows, { ...all, features: ['rookie'] }, TEAM_INDEX).length, '同一区分はOR');
+  assertEqual(applyChips(rows, { ...all, serial: ['has'] }, TEAM_INDEX).length, 1, 'シリアルあり');
+  assertEqual(applyChips(rows, { ...all, storage: ['binder'], serial: ['has'] }, TEAM_INDEX).length, 0,
+    '収納×シリアルはAND');
+  assertEqual(applyChips(rows, { ...all, priceWatch: ['on'] }, TEAM_INDEX)
+    .every((r) => r.card.priceWatch === true), true, '価格ウォッチ');
+});
+
+await test('チップ: 区分の定義が仕様の表どおり', () => {
+  assertEqual(CHIP_GROUPS.map((g) => g.id).join(), 'tier,storage,features,serial,priceWatch', '区分');
+  assertEqual(CHIP_GROUPS.find((g) => g.id === 'storage').options.map((o) => o.value).join(),
+    'magnetic,toploader,binder', '収納の選択肢');
+  assertEqual(hasActiveFilters(defaultFilters()), false, '既定は「絞り込みなし」扱い');
+  assert(hasActiveFilters({ ...defaultFilters(), teams: ['aston-villa'] }), 'チーム選択は絞り込みあり');
+  assert(hasActiveFilters({ ...defaultFilters(), tier: [] }), '層を外したのも絞り込みあり');
+});
+
+/* ========== チーム絞り込み（3モード） ========== */
+
+await test('チーム: 3モードで母集団が変わる', () => {
+  const rows = SEARCH_ROWS();
+  assertEqual(TEAM_MODES.map((m) => m.id).join(), 'print,current,career', 'モード');
+
+  const row = rows.find((r) => r.card.id === 'c-20260811-k3f');
+  assertEqual([...teamIdsForRow(TEAM_INDEX, row, 'print')].join(), 'borussia-dortmund', 'プリント時');
+  // 現所属は Real Madrid。サンプルの teams.json に無いので空になる
+  assertEqual(teamIdsForRow(TEAM_INDEX, row, 'current').size, 0, '現所属（teams.jsonに無い）');
+  assertEqual([...teamIdsForRow(TEAM_INDEX, row, 'career')].join(), 'borussia-dortmund', '在籍経験');
+});
+
+await test('チーム: 枚数の多い順に並び、未登録チームは出さない', () => {
+  const rows = SEARCH_ROWS();
+  // サンプルは Dortmund 1枚 / Brighton 1枚。Dortmund を2枚にして枚数順を見る
+  const weighted = [...rows, { ...rows[0], card: { ...rows[0].card, id: 'c-20260811-dup' } }];
+  const facets = teamFacets(TEAM_INDEX, weighted, 'print');
+
+  assertEqual(facets.length, 2, 'teams.jsonにある2チーム');
+  assertEqual(facets[0].team.id, 'borussia-dortmund', '多い順で先頭');
+  assertEqual(facets[0].count, 2, '枚数');
+  assertEqual(facets[1].count, 1, '2番目');
+  // teams.json に無いチーム名（Real Madrid）はチップに出さない（スキーマ仕様 §1）
+  assert(!facets.some(({ team }) => team.name === 'Real Madrid'), '未登録チームが出ている');
+  assertEqual(teamFacets(TEAM_INDEX, weighted, 'career')
+    .find((f) => f.team.id === 'borussia-dortmund').count, 2, '在籍経験でも数えられる');
+});
+
+await test('チーム: 絞り込みは選択したチームのORになる', () => {
+  const rows = SEARCH_ROWS();
+  const all = { ...defaultFilters(), tier: [] };
+  assertEqual(applyChips(rows, { ...all, teams: ['borussia-dortmund'] }, TEAM_INDEX).length, 1, '1チーム');
+  assertEqual(applyChips(rows, { ...all, teams: ['aston-villa'] }, TEAM_INDEX).length, 0, '持っていないチーム');
+  assertEqual(applyChips(rows, { ...all, teams: ['borussia-dortmund', 'aston-villa'] }, TEAM_INDEX).length, 1, 'OR');
+});
+
+await test('チーム検索シート: 正式名・日本語名・別名で絞れる', () => {
+  const facets = TEAMS_SAMPLE.teams.map((team) => ({ team, count: 1 }));
+  assertEqual(searchTeamFacets(facets, 'villa').length, 1, '正式名の一部');
+  assertEqual(searchTeamFacets(facets, 'AVFC').length, 1, '別名');
+  assertEqual(searchTeamFacets(facets, 'ヴィラ').length, 1, '日本語名');
+  assertEqual(searchTeamFacets(facets, 'ブライトン').length, 1, '日本語名（別表記）');
+  assertEqual(searchTeamFacets(facets, '').length, 3, '空なら全件');
+  assertEqual(searchTeamFacets(facets, 'zzz').length, 0, '一致なし');
+});
+
+/* ========== 狙い選手 targets.json（スキーマ仕様 §9-2） ========== */
+
+const NOW_DATE = '2026-11-04';
+const NOW_STAMP = '2026-11-04T12:00:00+09:00';
+
+await test('狙い選手: 追加・重複・削除', () => {
+  let json = addTarget(null, {
+    nameEn: 'Lamine Yamal', name: 'ラミン・ヤマル', playerId: null, note: 'まだ1枚も持っていない',
+  }, NOW_DATE, NOW_STAMP);
+  assertEqual(readTargets(json).length, 1, '未作成からでも追加できる');
+  assertEqual(json.schemaVersion, 1, 'schemaVersion');
+  assertEqual(json.updatedAt, NOW_STAMP, 'updatedAt');
+  assertEqual(readTargets(json)[0].addedAt, NOW_DATE, 'addedAt');
+  assertEqual(readTargets(json)[0].playerId, null, '未所持はplayerId null');
+
+  // nameEn が照合キー。空白・大小文字のゆらぎは同一と見る
+  assertEqual(addTarget(json, { nameEn: 'lamine  yamal', name: 'x', playerId: null, note: '' }, NOW_DATE, NOW_STAMP),
+    null, '重複は追加しない');
+
+  json = addTarget(json, {
+    nameEn: 'Jude Bellingham', name: 'ジュード・ベリンガム', playerId: 'p-0001', note: '',
+  }, NOW_DATE, NOW_STAMP);
+  assertEqual(readTargets(json).map((t) => t.nameEn).join(), 'Jude Bellingham,Lamine Yamal', 'nameEn昇順');
+
+  assertEqual(readTargets(removeTarget(json, 'jude bellingham', NOW_STAMP)).length, 1, '削除（ゆらぎ許容）');
+  assertEqual(removeTarget(json, 'Nobody', NOW_STAMP), null, '無い選手の削除はnull');
+  assertEqual(readTargets(null).length, 0, '未作成は空配列');
+  assertEqual(readTargets({ targets: [{ name: 'nameEnが無い' }] }).length, 0, 'nameEn必須');
+});
+
+await test('狙い選手: 台帳と突き合わせて所持状況を出す', () => {
+  const rows = SEARCH_ROWS();
+  const described = describeTargets([
+    { nameEn: 'Jude Bellingham', name: 'ジュード・ベリンガム', playerId: 'p-0001', note: '', addedAt: NOW_DATE },
+    { nameEn: 'jude  bellingham ', name: '（表記ゆれ）', playerId: null, note: '', addedAt: NOW_DATE },
+    { nameEn: 'Lamine Yamal', name: 'ラミン・ヤマル', playerId: null, note: '', addedAt: NOW_DATE },
+  ], rows);
+
+  assertEqual(described[0].cards, 1, 'playerIdで引ける');
+  assertEqual(described[1].cards, 1, 'playerIdが無くてもnameEnで引ける');
+  assertEqual(described[1].player.id, 'p-0001', '同じ選手に当たる');
+  assertEqual(described[2].cards, 0, '未所持は0枚');
+  assertEqual(described[2].player, null, '未所持は選手なし');
+});
+
+await test('狙い選手: 1件1行で書き出す（差分が1行で収まる）', () => {
+  const json = addTarget(
+    addTarget(null, { nameEn: 'Lamine Yamal', name: 'ラミン・ヤマル', playerId: null, note: '' }, NOW_DATE, NOW_STAMP),
+    { nameEn: 'Jude Bellingham', name: 'ジュード・ベリンガム', playerId: 'p-0001', note: '' }, NOW_DATE, NOW_STAMP);
+
+  const text = stringifyTargets(json);
+  assertEqual(text.endsWith('\n'), true, '末尾に改行');
+  assertEqual(JSON.parse(text).targets.length, 2, '再パースできる');
+  const lines = text.split('\n').filter((line) => line.trim().startsWith('{ "nameEn"'));
+  assertEqual(lines.length, 2, '狙い選手1件が1行');
+  assert(text.includes('"ラミン・ヤマル"'), '日本語がエスケープされずに入る');
+});
+
+await test('狙い選手: 初回は sha なしでPUTする（未作成のファイルを作る）', async () => {
+  let body = null;
+  const restore = stubFetch((url, init) => {
+    if (init.method === 'PUT') {
+      body = JSON.parse(init.body);
+      return { ok: true, status: 201, json: async () => ({ content: { sha: 'new-sha' } }) };
+    }
+    return errorResponse(404);
+  });
+  let result;
+  try {
+    result = await commitTargets(SETTINGS, { json: { schemaVersion: 1, targets: [] }, sha: '' }, (json) => ({
+      json: addTarget(json, { nameEn: 'Lamine Yamal', name: 'ラミン・ヤマル', playerId: null, note: '' }, NOW_DATE, NOW_STAMP),
+      message: 'iphone: targets add Lamine Yamal',
+      result: null,
+    }));
+  } finally { restore(); }
+
+  assertEqual('sha' in body, false, '初回は sha を送らない');
+  assertEqual(body.message, 'iphone: targets add Lamine Yamal', 'コミットメッセージ');
+  assertEqual(decodeBase64Utf8(body.content).includes('ラミン・ヤマル'), true, 'UTF-8経路のbase64');
+  assertEqual(result.sha, 'new-sha', '書き込み後のsha');
+});
+
+await test('狙い選手: 2回目は sha を送り、競合したら取り直して当て直す', async () => {
+  const puts = [];
+  let getCount = 0;
+  const stored = { schemaVersion: 1, targets: [] };
+  const restore = stubFetch((url, init) => {
+    if (init.method === 'PUT') {
+      puts.push(JSON.parse(init.body));
+      // 1回目は409で弾く
+      if (puts.length === 1) return errorResponse(409);
+      return { ok: true, status: 200, json: async () => ({ content: { sha: 'sha-2' } }) };
+    }
+    getCount += 1;
+    return {
+      ok: true, status: 200,
+      json: async () => ({ sha: 'fresh-sha', size: 1, content: encodeBase64Utf8(JSON.stringify(stored)) }),
+    };
+  });
+  let result;
+  try {
+    result = await commitTargets(SETTINGS, { json: stored, sha: 'stale-sha' }, (json) => ({
+      json: addTarget(json, { nameEn: 'Lamine Yamal', name: 'ラミン・ヤマル', playerId: null, note: '' }, NOW_DATE, NOW_STAMP),
+      message: 'iphone: targets add Lamine Yamal',
+      result: null,
+    }));
+  } finally { restore(); }
+
+  assertEqual(puts.length, 2, 'PUTは2回');
+  assertEqual(puts[0].sha, 'stale-sha', '1回目は手持ちのsha');
+  assertEqual(puts[1].sha, 'fresh-sha', '2回目は取り直したsha');
+  assertEqual(getCount, 1, '再GETは1回');
+  assertEqual(result.retried, true, 'リトライしたことが分かる');
+});
+
+/* ========== 取り込みフォームの v1.4 対応（写真判定運用仕様 §7-1） ========== */
+
+await test('新規登録は tier=vault 固定・sourceChecklist は null', () => {
+  const card = buildCardRecord('c-20261104-aaa', 'p-0001', {
+    maker: 'Topps', series: 'Chrome UCC', season: '2025-26', cardNo: '12', variation: 'Base',
+    serial: '', features: [], teamOnCard: 'Aston Villa', tier: 'vault',
+    storageType: 'toploader', storageName: '', priceWatch: true, gbRef: '', notes: '',
+  }, new Date(2026, 10, 4));
+
+  assertEqual(card.tier, 'vault', 'tier');
+  assertEqual(card.priceWatch, true, 'priceWatch既定ON');
+  assertEqual(card.sourceChecklist, null, 'sourceChecklist');
+  assertEqual(card.gbRef, null, 'gbRef未指定はnull');
+  assertEqual(card.storage.name, null, 'トップローダーは収納名なし');
+});
+
+await test('gbRef を記録でき、編集では sourceChecklist を持ち越す', () => {
+  const card = buildCardRecord('c-20261104-bbb', 'p-0001', {
+    maker: 'Topps', series: 'Chrome UCC', season: '2025-26', cardNo: '12', variation: 'Gold',
+    serial: '7/50', features: ['auto'], teamOnCard: 'Aston Villa', tier: 'vault',
+    storageType: 'magnetic', storageName: '', priceWatch: true, gbRef: 'gb-2026-01', notes: '',
+  }, new Date(2026, 10, 4));
+  assertEqual(card.gbRef, 'gb-2026-01', 'gbRef');
+
+  // チェックリスト登録で作ったカード（段階3）を編集しても出自が消えない
+  const fromChecklist = { ...card, sourceChecklist: { productKey: '2025-26-topps-chrome-ucc', cardNo: '12' } };
+  const values = valuesFromCard(fromChecklist);
+  assertEqual(values.gbRef, 'gb-2026-01', 'valuesFromCardがgbRefを返す');
+  const edited = applyCardEdit(fromChecklist, 'p-0001', { ...values, notes: '直した' }, new Date(2026, 10, 5));
+  assertEqual(edited.sourceChecklist.productKey, '2025-26-topps-chrome-ucc', 'sourceChecklistを持ち越す');
+  assertEqual(edited.addedAt, card.addedAt, '登録日も持ち越す');
+  assertEqual(edited.notes, '直した', '備考は更新される');
+});
+
+/* ========== キャッシュ（参照データ込み・v2） ========== */
+
+await test('キャッシュ: 参照データも保存され、未作成でも戻る', () => withCleanCache(() => {
+  const refs = {
+    teams: { json: TEAMS_SAMPLE, sha: 'teams-sha' },
+    targets: null,
+    checklists: [{ name: 'a.json', key: 'a', path: 'checklists/a.json', sha: 's', size: 1 }],
+    gb: [],
+  };
+  assertEqual(saveSnapshot(SETTINGS, { ...SNAPSHOT(), refs }), true, '保存できた');
+
+  const restored = loadSnapshot(SETTINGS);
+  assertEqual(restored.refs.teams.sha, 'teams-sha', 'teamsのsha');
+  assertEqual(buildTeamIndex(restored.refs.teams.json).teams.length, 3, '索引を作り直せる');
+  assertEqual(restored.refs.targets, null, '未作成はnullのまま');
+  assertEqual(restored.refs.checklists.length, 1, 'checklistsの一覧');
+  assertEqual(restored.refs.gb.length, 0, 'gbは0件');
+}));
+
+await test('キャッシュ: v1の保存分は捨てる（参照データが無い版）', () => withCleanCache(() => {
+  localStorage.setItem('soccer-cards:snapshot', JSON.stringify({
+    version: 1, owner: SETTINGS.owner, repo: SETTINGS.repo,
+    collection: { json: parse('collection.json'), sha: 'x' },
+  }));
+  assertEqual(loadSnapshot(SETTINGS), null, '古い版は使わない');
+}));
+
 /* ========== 実データを実際に描画して目視確認 ========== */
 
-const { merged, sources } = mergeCollection(
-  parse('collection.json'), parse('prices.json'), parse('players_info.json'));
-const rows = sortRows(buildRows(merged), 'name', false);
+const { merged, sources, career } = mergeCollection(
+  parse('collection.json'), parse('prices.json'), PLAYERS_INFO_WITH_CAREER());
+const rows = sortRows(buildRows(merged, career), 'name', false);
 document.getElementById('render-target').replaceChildren(...buildCardList(rows));
 document.getElementById('render-message').textContent =
-  `${rows.length}枚（マージ済み。1枚目の価格が ¥13,000 ならオーバーレイが効いている）`;
+  `${rows.length}枚（マージ済み。1枚目の価格が ¥13,000 ならオーバーレイが効いている／`
+  + `名前の右に年齢が出ていれば birthDate が効いている）`;
 document.getElementById('detail-target').replaceChildren(
-  buildDetail(rows.find((r) => r.card.id === 'c-20260811-k3f'), sources));
+  buildDetail(rows.find((r) => r.card.id === 'c-20260811-k3f'), sources, TEAM_INDEX));
 
 /* ========== 集計 ========== */
 

@@ -36,6 +36,7 @@ const els = {
 /**
  * @param {{
  *   getCollection: () => {json: object, sha: string} | null,
+ *   getTeamIndex: () => object | null,
  *   commit: (apply: (json: object) => object) => Promise<object>,
  *   onExit: (summary: {saved: number, skipped: number}) => void,
  * }} deps
@@ -47,8 +48,6 @@ export function createIngestForm(deps) {
     saved: 0,
     skipped: 0,
     busy: false,
-    /** 直前に使ったバインダー名。連続登録で毎回打たなくて済むように覚える */
-    lastBinderName: '',
   };
 
   function collection() {
@@ -68,14 +67,16 @@ export function createIngestForm(deps) {
     // 完全一致が1人だけなら既定で紐づけ、それ以外は新規作成から始める
     const choice = exact.length === 1 ? exact[0].player.id : NEW_PLAYER;
 
-    // 層と収納先の下書き。原則 binder=gallery / magnetic・toploader=vault（スキーマ仕様 §4）
+    // 新規登録はすべて金庫級（スキーマ仕様 §5-1）。層は選ばせず、priceWatch は
+    // 既定ON（同 §1）。収納先は、シリアル・サイン・パッチ付きの当たりカードは
+    // マグネットローダーに入れることが多いので、そちらを下書きにする
     const features = item.card.features ?? [];
-    const looksVault = Boolean(item.card.serial) || features.includes('auto') || features.includes('patch');
+    const premium = Boolean(item.card.serial) || features.includes('auto') || features.includes('patch');
 
     const total = state.items.length;
     const checks = cardform.describeChecks(item.needsCheck);
 
-    cardform.refreshDatalists(collection());
+    cardform.refreshDatalists(collection(), deps.getTeamIndex());
     cardform.fill({
       mode: 'ingest',
       progress: (total > 1 ? `${state.index + 1} / ${total} 件目` : '1枚を確認して保存します')
@@ -83,10 +84,11 @@ export function createIngestForm(deps) {
       values: {
         ...item.card,
         variation: item.card.variation ?? 'Base',
-        tier: looksVault ? 'vault' : 'gallery',
-        storageType: looksVault ? 'toploader' : 'binder',
-        storageName: state.lastBinderName,
-        priceWatch: looksVault,
+        tier: 'vault',
+        storageType: premium ? 'magnetic' : 'toploader',
+        storageName: '',
+        priceWatch: true,
+        gbRef: '',
         price: undefined,
       },
       players,
@@ -160,7 +162,6 @@ export function createIngestForm(deps) {
     try {
       const { result, retried } = await deps.commit(apply);
       state.saved += 1;
-      if (input.card.storageType === 'binder') state.lastBinderName = input.card.storageName.trim();
 
       const note = `保存しました（${result.card.id}）${retried ? '｜競合したため取り直して保存しました' : ''}`;
       advance();
@@ -205,7 +206,7 @@ export function createIngestForm(deps) {
   function open() {
     cardform.setMode('ingest');
     reset();
-    cardform.refreshDatalists(collection());
+    cardform.refreshDatalists(collection(), deps.getTeamIndex());
     cardform.attach({
       onSave: save,
       onSkip: () => {

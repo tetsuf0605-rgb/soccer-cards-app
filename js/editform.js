@@ -26,6 +26,7 @@ import {
 /**
  * @param {{
  *   getCollection: () => {json: object, sha: string} | null,
+ *   getTeamIndex: () => object | null,
  *   hasPriceOverlay: (cardId: string) => boolean,
  *   commit: (apply: (json: object) => object) => Promise<object>,
  *   onDone: (cardId: string|null) => void,
@@ -49,7 +50,7 @@ export function createEditForm(deps) {
 
     state.cardId = cardId;
     cardform.setMode('edit');
-    cardform.refreshDatalists(json);
+    cardform.refreshDatalists(json, deps.getTeamIndex());
     cardform.attach({ onSave: save, onCancel: leave, onBack: leave });
     cardform.fill({
       mode: 'edit',

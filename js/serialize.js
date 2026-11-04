@@ -17,14 +17,17 @@
 
 const INDENT = '  ';
 
-/** オブジェクトを1行に畳む深さ。root=0, players/cards=1, その要素=2。 */
-const INLINE_FROM_DEPTH = 3;
+/** collection.json でオブジェクトを1行に畳む深さ。root=0, players/cards=1, その要素=2。 */
+const COLLECTION_INLINE_FROM = 3;
+
+/** targets.json は1件1行（スキーマ仕様 §9-2 のサンプルどおり）。root=0, targets=1, その要素=2。 */
+const TARGETS_INLINE_FROM = 2;
 
 function isScalar(value) {
   return value === null || typeof value !== 'object';
 }
 
-function format(value, depth) {
+function format(value, depth, inlineFrom) {
   if (isScalar(value)) return JSON.stringify(value);
 
   const pad = INDENT.repeat(depth);
@@ -33,19 +36,19 @@ function format(value, depth) {
   if (Array.isArray(value)) {
     if (value.length === 0) return '[]';
     if (value.every(isScalar)) return `[${value.map((item) => JSON.stringify(item)).join(', ')}]`;
-    const items = value.map((item) => inner + format(item, depth + 1));
+    const items = value.map((item) => inner + format(item, depth + 1, inlineFrom));
     return `[\n${items.join(',\n')}\n${pad}]`;
   }
 
   const entries = Object.entries(value);
   if (entries.length === 0) return '{}';
 
-  if (depth >= INLINE_FROM_DEPTH) {
-    const pairs = entries.map(([key, item]) => `${JSON.stringify(key)}: ${format(item, depth + 1)}`);
+  if (depth >= inlineFrom) {
+    const pairs = entries.map(([key, item]) => `${JSON.stringify(key)}: ${format(item, depth + 1, inlineFrom)}`);
     return `{ ${pairs.join(', ')} }`;
   }
 
-  const pairs = entries.map(([key, item]) => `${inner}${JSON.stringify(key)}: ${format(item, depth + 1)}`);
+  const pairs = entries.map(([key, item]) => `${inner}${JSON.stringify(key)}: ${format(item, depth + 1, inlineFrom)}`);
   return `{\n${pairs.join(',\n')}\n${pad}}`;
 }
 
@@ -55,5 +58,16 @@ function format(value, depth) {
  * @returns {string}
  */
 export function stringifyCollection(collection) {
-  return `${format(collection, 0)}\n`;
+  return `${format(collection, 0, COLLECTION_INLINE_FROM)}\n`;
+}
+
+/**
+ * targets.json の本文を作る（スキーマ仕様 §9-2）。
+ *
+ * 狙い選手1件が1行になるので、追加・削除の差分がその1行だけで収まる。
+ * @param {object} targets
+ * @returns {string}
+ */
+export function stringifyTargets(targets) {
+  return `${format(targets, 0, TARGETS_INLINE_FROM)}\n`;
 }

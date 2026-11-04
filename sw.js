@@ -9,13 +9,16 @@
  * 最終取得の内容は js/cache.js が localStorage に持つ。
  */
 
-const CACHE_NAME = 'soccer-cards-shell-v3';
+const CACHE_NAME = 'soccer-cards-shell-v4';
 
 /**
  * インストール時に取っておくアプリ殻。
  *
  * 実行時キャッシュ（fetchハンドラ）だけだと、初回起動の直後に圏外へ入った場合に
  * 取り損ねたファイルが出る。すべて静的importなので一覧は手で並べれば足りる。
+ *
+ * themes/ の壁紙はここに並べない（まだ置かれていないことがある）。一度でも
+ * 表示すればfetchハンドラが拾うので、2回目以降はオフラインでも出る。
  */
 const SHELL = [
   './',
@@ -26,6 +29,7 @@ const SHELL = [
   './js/base64.js',
   './js/cache.js',
   './js/cardform.js',
+  './js/chips.js',
   './js/config.js',
   './js/confirm.js',
   './js/editform.js',
@@ -35,8 +39,12 @@ const SHELL = [
   './js/ingestform.js',
   './js/merge.js',
   './js/query.js',
+  './js/refdata.js',
   './js/render.js',
   './js/serialize.js',
+  './js/targets.js',
+  './js/text.js',
+  './js/theme.js',
   './icons/icon-192.png',
   './icons/icon-512.png',
   './icons/icon-512-maskable.png',

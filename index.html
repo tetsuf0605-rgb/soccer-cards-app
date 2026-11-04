@@ -26,6 +26,9 @@
     <button type="button" id="btn-import" class="iconbtn" title="取り込み">
       <span aria-hidden="true">＋</span><span class="sr-only">カードを取り込む</span>
     </button>
+    <button type="button" id="btn-targets" class="iconbtn" title="狙い選手" aria-expanded="false">
+      <span aria-hidden="true">★</span><span class="sr-only">狙い選手</span>
+    </button>
     <button type="button" id="btn-reload" class="iconbtn" title="再読込">
       <span aria-hidden="true">↻</span><span class="sr-only">再読込</span>
     </button>
@@ -43,18 +46,89 @@
   <!-- ===== 一覧 ===== -->
   <section id="view-list" class="view">
     <div class="toolbar">
-      <label class="sr-only" for="input-search">選手名で検索</label>
-      <input id="input-search" type="search" placeholder="選手名で検索"
+      <label class="sr-only" for="input-search">カードを検索</label>
+      <input id="input-search" type="search" placeholder="選手・チーム・シリーズ・シリアルなど"
              autocapitalize="none" autocorrect="off" spellcheck="false"
              enterkeyhint="search" autocomplete="off">
       <div class="toolbar__row">
         <label class="sr-only" for="select-sort">並び替え</label>
         <select id="select-sort"></select>
         <button type="button" id="btn-sort-dir" class="btn btn--ghost">昇順</button>
+        <button type="button" id="btn-filters" class="btn btn--ghost" aria-expanded="false"
+                aria-controls="filter-panel">絞り込み</button>
       </div>
     </div>
+
+    <!-- ===== チップ絞り込み（スキーマ仕様 §1） ===== -->
+    <div id="filter-panel" class="filters" hidden>
+      <div id="filter-groups"></div>
+
+      <div class="filters__row filters__row--team">
+        <span class="filters__label">チーム</span>
+        <div id="filter-team-modes" class="segmented" role="group" aria-label="チームの照合モード"></div>
+      </div>
+      <div id="filter-team-chips" class="chips"></div>
+      <p id="filter-team-note" class="hint"></p>
+
+      <div class="actions actions--tight">
+        <button type="button" id="btn-team-pick" class="btn btn--ghost"
+                aria-expanded="false" aria-controls="team-sheet">チームを選ぶ</button>
+        <button type="button" id="btn-filter-reset" class="btn btn--ghost">絞り込みを戻す</button>
+      </div>
+
+      <!-- チーム検索シート（全チームから選ぶ） -->
+      <div id="team-sheet" class="sheet" hidden>
+        <label class="sr-only" for="team-sheet-search">チーム名で絞り込み</label>
+        <input id="team-sheet-search" type="search" placeholder="チーム名で絞り込み（略称・日本語名でも）"
+               autocapitalize="none" autocorrect="off" spellcheck="false" autocomplete="off">
+        <div id="team-sheet-list"></div>
+        <div class="actions actions--tight">
+          <button type="button" id="btn-team-sheet-close" class="btn btn--ghost">閉じる</button>
+        </div>
+      </div>
+    </div>
+
     <p id="list-message" class="message" role="status" aria-live="polite"></p>
     <ul id="card-list" class="cards"></ul>
+  </section>
+
+  <!-- ===== 狙い選手（targets.json・スキーマ仕様 §9-2） ===== -->
+  <section id="view-targets" class="view" hidden>
+    <button type="button" id="btn-targets-back" class="btn btn--ghost btn--back">← 一覧へ</button>
+
+    <h2 class="section-title">狙い選手</h2>
+    <p class="hint">
+      狙っている選手を控えておくリストです。チェックリストの所持照合（段階3）で
+      「この製品にこの選手がいる」を拾うのに使います。カード表記（nameEn）が照合キーです。
+    </p>
+    <p id="targets-count" class="message" role="status" aria-live="polite"></p>
+    <ul id="targets-list" class="targets"></ul>
+
+    <h2 class="section-title">狙いに追加</h2>
+    <div class="field">
+      <label for="tg-search">登録済みの選手から選ぶ</label>
+      <input id="tg-search" type="search" placeholder="選手名で絞り込み"
+             autocapitalize="none" autocorrect="off" spellcheck="false" autocomplete="off">
+      <div id="tg-candidates" class="choices"></div>
+      <p class="hint">まだ1枚も持っていない選手は、下の2つを手で入力してください。</p>
+    </div>
+    <div class="field">
+      <label for="tg-nameen">カード表記（nameEn）</label>
+      <input id="tg-nameen" type="text" autocapitalize="words" autocomplete="off">
+    </div>
+    <div class="field">
+      <label for="tg-name">名前（カナ）</label>
+      <input id="tg-name" type="text" autocomplete="off">
+    </div>
+    <div class="field">
+      <label for="tg-note">メモ（任意）</label>
+      <input id="tg-note" type="text" autocomplete="off">
+    </div>
+    <div class="actions">
+      <button type="button" id="btn-target-add" class="btn btn--primary" disabled>狙いに追加</button>
+    </div>
+    <div id="targets-confirm"></div>
+    <p id="targets-message" class="message" role="status" aria-live="polite"></p>
   </section>
 
   <!-- ===== 詳細 ===== -->
@@ -197,19 +271,23 @@
       </div>
 
       <h2 class="section-title">分類・収納</h2>
-      <div class="field">
+      <!-- 新規登録では層を選ばせない（常に金庫。スキーマ仕様 §5-1）。
+           既存のギャラリーカードを金庫へ昇格させる場合だけ編集で出す -->
+      <div class="field" id="ig-tier-field" hidden>
         <label for="ig-tier">層</label>
         <select id="ig-tier">
-          <option value="gallery">ギャラリー</option>
           <option value="vault">金庫</option>
+          <option value="gallery">ギャラリー</option>
         </select>
+        <p class="hint">ギャラリーは既存データ専用です（新規登録はすべて金庫）。</p>
       </div>
+      <p class="hint" id="ig-tier-note">新規登録はすべて<b>金庫</b>です（スキーマ仕様 §5-1）。</p>
       <div class="field">
         <label for="ig-storage-type">収納先</label>
         <select id="ig-storage-type">
-          <option value="binder">バインダー</option>
-          <option value="toploader">トップローダー</option>
           <option value="magnetic">マグネットローダー</option>
+          <option value="toploader">トップローダー</option>
+          <option value="binder" id="ig-storage-binder">バインダー</option>
         </select>
       </div>
       <div class="field" id="ig-storage-name-field">
@@ -218,7 +296,14 @@
       </div>
       <div class="field">
         <label class="check"><input type="checkbox" id="ig-pricewatch"><span>価格ウォッチの対象にする</span></label>
-        <p class="hint">ONにすると cowork の価格チェックが価格と履歴を更新します。</p>
+        <p class="hint">新規登録の既定はONです。cowork の価格チェックが価格と履歴を更新します。</p>
+      </div>
+      <div class="field" id="ig-gbref-field">
+        <label for="ig-gbref">GBで入手した（任意）</label>
+        <select id="ig-gbref">
+          <option value="">指定しない</option>
+        </select>
+        <p id="ig-gbref-note" class="hint"></p>
       </div>
 
       <h2 class="section-title">価格（任意）</h2>
