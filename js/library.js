@@ -14,6 +14,7 @@ import { el, setMessage, formatFeature, priceLine } from './render.js';
 import {
   MATCH_STATUS,
   applicableVariations,
+  denominatorLabel,
   kindLabel,
   matchChecklist,
   parallelsClipboardText,
@@ -167,12 +168,11 @@ export function createLibrary(deps) {
     root.append(el('h3', 'section-title', 'パラレル'));
     const variations = el('ul', 'variations');
     for (const variation of checklist.variations) {
-      const denominator = variation.denominator === 'none' || variation.denominator === undefined
-        ? 'シリアルなし'
-        : `/${variation.denominator}`;
       const item = el('li', 'variations__item');
-      item.append(el('span', 'variations__name', variation.name));
-      item.append(el('span', 'variations__meta', denominator));
+      // 限定版（Hobby / Asia 等）があれば名前に添える（写真判定運用仕様 §3-3）
+      item.append(el('span', 'variations__name',
+        variation.exclusive ? `${variation.name}（${variation.exclusive}）` : variation.name));
+      item.append(el('span', 'variations__meta', denominatorLabel(variation.denominator)));
       variations.append(item);
     }
     if (checklist.variations.length === 0) {

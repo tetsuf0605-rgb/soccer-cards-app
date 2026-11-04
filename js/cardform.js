@@ -106,6 +106,8 @@ const state = {
   players: [],
   /** 新規作成を選んだときに入れ直す下書き（判定の読み取り結果） */
   draft: null,
+  /** バリエーションの補助候補（既存の登録値）。チェックリストが来たら後ろへ回す */
+  variationFallback: [],
   /** シリアルの再確認が要るかの判定に使う、開いた時点の値 */
   originalSerial: '',
 };
@@ -207,7 +209,7 @@ function fillDatalist(node, values) {
  */
 export function refreshDatalists(collection, teamIndex) {
   const cards = collection?.cards ?? [];
-  for (const field of ['maker', 'series', 'variation', 'season']) {
+  for (const field of ['maker', 'series', 'season']) {
     fillDatalist(els.lists[field], collectValues(cards, field));
   }
 
@@ -217,6 +219,28 @@ export function refreshDatalists(collection, teamIndex) {
 
   fillDatalist(els.lists.binder, collectBinderNames(cards));
   fillDatalist(els.lists.nationality, collectValues(collection?.players ?? [], 'nationality'));
+
+  // 既存値を覚えておく。チェックリストが届いたら、その前に差し込む
+  state.variationFallback = collectValues(cards, 'variation');
+  fillDatalist(els.lists.variation, state.variationFallback);
+}
+
+/**
+ * バリエーションの候補を、製品のチェックリスト優先で並べ直す
+ * （写真判定運用仕様 §7-1「製品のチェックリスト（variations[].name）を第一候補、
+ * 既存登録値を補助候補」）。
+ *
+ * チェックリストの取得は非同期なので、フォームを開いたあとから差し替わることがある。
+ *
+ * @param {string[]} names チェックリストの variations[].name
+ */
+export function setVariationOptions(names) {
+  const ordered = [...(names ?? [])];
+  const seen = new Set(ordered);
+  for (const value of state.variationFallback) {
+    if (!seen.has(value)) ordered.push(value);
+  }
+  fillDatalist(els.lists.variation, ordered);
 }
 
 function clearChecks() {

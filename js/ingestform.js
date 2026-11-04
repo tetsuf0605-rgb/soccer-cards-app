@@ -11,6 +11,7 @@ import { setMessage } from './render.js';
 import { askConfirm, closeConfirm } from './confirm.js';
 import * as cardform from './cardform.js';
 import { NEW_PLAYER } from './cardform.js';
+import { productKeyOf } from './checklist.js';
 import {
   IngestError,
   addToCollection,
@@ -37,6 +38,7 @@ const els = {
  * @param {{
  *   getCollection: () => {json: object, sha: string} | null,
  *   getTeamIndex: () => object | null,
+ *   getChecklistVariations: (productKey: string) => Promise<string[]>,
  *   commit: (apply: (json: object) => object) => Promise<object>,
  *   onExit: (summary: {saved: number, skipped: number}) => void,
  * }} deps
@@ -100,6 +102,25 @@ export function createIngestForm(deps) {
       priceNote: null,
     });
     els.paste.hidden = true;
+
+    // バリエーション候補を製品のチェックリストに寄せる（写真判定運用仕様 §7-1）。
+    // 取得は非同期なので、間に合わなければ既存の登録値のままになる
+    offerChecklistVariations(item.card);
+  }
+
+  /**
+   * 判定が読み取った maker / series / season から製品を割り出し、
+   * そのチェックリストのパラレル名を第一候補にする。
+   */
+  async function offerChecklistVariations(card) {
+    const productKey = productKeyOf(card.maker, card.series, card.season);
+    cardform.setVariationOptions([]);
+    if (!productKey) return;
+
+    const shown = state.index;
+    const names = await deps.getChecklistVariations(productKey);
+    // 待っている間に次の1枚へ進んでいたら当てない
+    if (names.length > 0 && state.index === shown) cardform.setVariationOptions(names);
   }
 
   /* ===== 保存 ===== */

@@ -43,6 +43,8 @@ from _common import (  # noqa: E402
 CARD_KINDS = {"base", "insert", "auto", "relic", "other"}
 VARIATION_CATEGORIES = {"base", "parallel", "insert", "auto", "relic", "other"}
 COVERAGE = {"full", "partial", "none", "unknown"}
+# denominator の語（写真判定運用仕様 §3-3）。"unknown" は分母が読めなかった場合
+DENOMINATOR_WORDS = {"none", "unknown"}
 # collection の features と同じ語彙（スキーマ仕様 §9-3）。ほかは警告だけ出して通す
 KNOWN_FEATURES = {"auto", "patch", "rookie"}
 
@@ -79,18 +81,25 @@ def normalize_variations(draft, errors):
         if category not in VARIATION_CATEGORIES:
             errors.append(f"{where}: category「{category}」は語彙外です（{sorted(VARIATION_CATEGORIES)}）")
 
-        # denominator は数値（シリアル分母）か "none"（シリアルなし）
+        # denominator は数値（シリアル分母）/ "none"（シリアルなし）/ "unknown"（分母不明）
+        # 写真判定運用仕様 §3-3
         denominator = raw.get("denominator", "none")
-        if isinstance(denominator, str):
-            denominator = as_text(denominator) or "none"
-            if denominator != "none" and not denominator.isdigit():
-                errors.append(f"{where}: denominator「{denominator}」は数値か \"none\" にしてください")
-            elif denominator.isdigit():
-                denominator = int(denominator)
-        elif not isinstance(denominator, int):
+        if isinstance(denominator, bool) or not isinstance(denominator, (str, int)):
             errors.append(f"{where}: denominator の型が読めません")
+        elif isinstance(denominator, str):
+            denominator = as_text(denominator) or "none"
+            if denominator.isdigit():
+                denominator = int(denominator)
+            elif denominator not in DENOMINATOR_WORDS:
+                errors.append(
+                    f"{where}: denominator「{denominator}」は数値か "
+                    f"{' / '.join(sorted(DENOMINATOR_WORDS))} にしてください"
+                )
 
         entry = {"name": name, "category": category, "denominator": denominator}
+        # 限定版の区別（Hobby / Asia 等。同 §3-3）。あれば残す
+        if as_text(raw.get("exclusive")):
+            entry["exclusive"] = as_text(raw.get("exclusive"))
         if as_text(raw.get("notes")):
             entry["notes"] = as_text(raw.get("notes"))
         result.append(entry)

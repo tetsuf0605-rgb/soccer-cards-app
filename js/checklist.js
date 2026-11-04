@@ -75,6 +75,17 @@ export function kindLabel(kind) {
 }
 
 /**
+ * パラレルのシリアル分母の表示（写真判定運用仕様 §3-3）。
+ * 数値ならそのまま、`none` はシリアルなし、`unknown` は読み取れなかったもの。
+ */
+export function denominatorLabel(denominator) {
+  if (typeof denominator === 'number') return `/${denominator}`;
+  if (denominator === 'unknown') return '分母不明';
+  // 未設定も「シリアルなし」に寄せる（v1.2 の古いチェックリストは省略していることがある）
+  return 'シリアルなし';
+}
+
+/**
  * チェックリストJSONを扱いやすい形に整える（壊れていても落ちない）。
  *
  * @param {object|null} json checklists/{productKey}.json

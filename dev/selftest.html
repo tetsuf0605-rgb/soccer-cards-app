@@ -60,6 +60,7 @@ import { matchKey } from '../js/text.js';
 import {
   productKeyOf, productKeyOfCard, slug, readChecklist, applicableVariations,
   matchChecklist, cardNoKey, parallelsClipboardText, valuesFromChecklistRow,
+  denominatorLabel, kindLabel,
 } from '../js/checklist.js';
 import {
   readGb, spotTeams, cardsFromBreak, assignCardsToSpots,
@@ -1919,6 +1920,45 @@ await test('チェックリスト登録: 複数選手カードは他の選手を
   assert(values.notes.includes('デュアルオート'), 'チェックリストの備考');
   assert(values.notes.includes('他の選手: Bukayo Saka'), '他の選手');
   assertEqual(values.features.join(','), 'auto', '特徴');
+});
+
+await test('パラレルの分母表示（写真判定運用仕様 §3-3）', () => {
+  assertEqual(denominatorLabel(50), '/50', '数値');
+  assertEqual(denominatorLabel(1), '/1', '1/1');
+  assertEqual(denominatorLabel('none'), 'シリアルなし', 'none');
+  // 分母が読み取れなかったパラレルを「シリアルなし」と出してしまうと誤解を招く
+  assertEqual(denominatorLabel('unknown'), '分母不明', 'unknown');
+  assertEqual(denominatorLabel(undefined), 'シリアルなし', '未設定（v1.2の古い形式）');
+});
+
+await test('カード種別の表示', () => {
+  assertEqual(kindLabel('auto'), 'オート', 'auto');
+  assertEqual(kindLabel('base'), 'ベース', 'base');
+  // 知らない値はそのまま見せる
+  assertEqual(kindLabel('mystery'), 'mystery', '語彙外');
+});
+
+await test('チェックリスト: exclusive と unknown を落とさずに読む', () => {
+  const checklist = readChecklist({
+    productKey: 'x', variations: [
+      { name: 'Asia Refractor', category: 'parallel', denominator: 'unknown', exclusive: 'Asia' },
+    ],
+  });
+  assertEqual(checklist.variations[0].exclusive, 'Asia', '限定版の区別');
+  assertEqual(checklist.variations[0].denominator, 'unknown', '分母不明');
+});
+
+await test('schemaVersion 1（variations のみ）のチェックリストも読める', () => {
+  // v1.2 形式。cards[] を持たないので所持照合は使えないが、パラレル一覧は使える
+  const old = readChecklist({
+    schemaVersion: 1, productKey: 'y', maker: 'Panini', series: 'Old', season: '2020-21',
+    variations: [{ name: 'Base', category: 'base', denominator: 'none' }],
+  });
+  assertEqual(old.schemaVersion, 1, 'schemaVersion');
+  assertEqual(old.cards.length, 0, 'cards[] なし');
+  assertEqual(old.cardsCoverage, 'none', 'cardsCoverage');
+  assertEqual(matchChecklist(old, []).entries.length, 0, '照合は空');
+  assertEqual(JSON.parse(parallelsClipboardText(old)).variations.length, 1, 'コピーは使える');
 });
 
 /* ========== GB定義（段階3 / スキーマ仕様 §9-4） ========== */

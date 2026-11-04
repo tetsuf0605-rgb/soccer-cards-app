@@ -18,6 +18,7 @@ import {
   defaultFilters, SORT_OPTIONS, DEFAULT_SORT_ID,
 } from './query.js';
 import { buildTeamIndex } from './refdata.js';
+import { readChecklist } from './checklist.js';
 import { el, setMessage, buildCardList, buildDetail, buildFileStat, buildDirStat } from './render.js';
 import { createIngestForm } from './ingestform.js';
 import { createEditForm } from './editform.js';
@@ -456,9 +457,27 @@ async function commit(apply) {
 
 /* ===== 取り込み ===== */
 
+/**
+ * 製品のパラレル名を返す（写真判定運用仕様 §7-1 のオートコンプリート用）。
+ *
+ * checklists/ に無い製品、取得に失敗した場合は空配列。候補が増えないだけなので
+ * 取り込みは止めない。
+ */
+async function checklistVariations(productKey) {
+  const known = state.refs.checklists?.some((entry) => entry.key === productKey);
+  if (!known) return [];
+  try {
+    const json = await loadRefFile('checklist', productKey, checklistPath(productKey));
+    return readChecklist(json).variations.map((variation) => variation.name);
+  } catch {
+    return [];
+  }
+}
+
 const ingestForm = createIngestForm({
   getCollection: () => state.collection,
   getTeamIndex: () => state.teamIndex,
+  getChecklistVariations: checklistVariations,
   commit,
   onExit: (summary) => {
     showView('list');
