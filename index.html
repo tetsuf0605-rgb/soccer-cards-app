@@ -318,8 +318,12 @@
         </select>
         <p class="hint">ギャラリーは既存データ専用です（新規登録はすべて金庫）。</p>
       </div>
-      <p class="hint" id="ig-tier-note">新規登録はすべて<b>金庫</b>です（スキーマ仕様 §5-1）。</p>
-      <div class="field">
+      <p class="hint" id="ig-tier-note">
+        新規登録はすべて<b>金庫</b>・<b>トップローダー</b>です。
+        マグネットローダーに入れたカードは、保存後に詳細 →「編集する」で変えられます。
+      </p>
+      <!-- 新規登録では収納先を選ばせない。既存カードの編集（ギャラリー→金庫の昇格を含む）でだけ出す -->
+      <div class="field" id="ig-storage-field">
         <label for="ig-storage-type">収納先</label>
         <select id="ig-storage-type">
           <option value="magnetic">マグネットローダー</option>

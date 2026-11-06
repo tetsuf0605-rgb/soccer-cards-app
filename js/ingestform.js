@@ -69,12 +69,8 @@ export function createIngestForm(deps) {
     // 完全一致が1人だけなら既定で紐づけ、それ以外は新規作成から始める
     const choice = exact.length === 1 ? exact[0].player.id : NEW_PLAYER;
 
-    // 新規登録はすべて金庫級（スキーマ仕様 §5-1）。層は選ばせず、priceWatch は
-    // 既定ON（同 §1）。収納先は、シリアル・サイン・パッチ付きの当たりカードは
-    // マグネットローダーに入れることが多いので、そちらを下書きにする
-    const features = item.card.features ?? [];
-    const premium = Boolean(item.card.serial) || features.includes('auto') || features.includes('patch');
-
+    // 新規登録はすべて金庫級・トップローダー（層も収納先も選ばせない）。
+    // priceWatch は既定ON（スキーマ仕様 §1）
     const total = state.items.length;
     const checks = cardform.describeChecks(item.needsCheck);
 
@@ -87,7 +83,7 @@ export function createIngestForm(deps) {
         ...item.card,
         variation: item.card.variation ?? 'Base',
         tier: 'vault',
-        storageType: premium ? 'magnetic' : 'toploader',
+        storageType: 'toploader',
         storageName: '',
         priceWatch: true,
         gbRef: '',

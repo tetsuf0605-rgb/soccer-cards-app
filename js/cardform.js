@@ -71,6 +71,7 @@ const els = {
   tierField: document.getElementById('ig-tier-field'),
   tierNote: document.getElementById('ig-tier-note'),
   storageType: document.getElementById('ig-storage-type'),
+  storageField: document.getElementById('ig-storage-field'),
   storageBinder: document.getElementById('ig-storage-binder'),
   storageNameField: document.getElementById('ig-storage-name-field'),
   storageName: document.getElementById('ig-storage-name'),
@@ -141,9 +142,10 @@ function labelsFor(mode) {
 /**
  * ボタンの文言と、モードでしか使わない部品の出し入れ。
  *
- * 新規登録（ingest / checklist）では層を選ばせず常に金庫、収納はマグネット/
- * トップローダーの2択（写真判定運用仕様 §7-1・スキーマ仕様 §5-1）。編集では
- * 既存のギャラリー・バインダーのカードを扱うので、どちらも選べるようにする（同 §5-2）。
+ * 新規登録（ingest / checklist）では層も収納先も選ばせず、常に金庫・トップローダー
+ * （スキーマ仕様 §5-1 は「storage は magnetic / toploader の2択」だが、毎回選ぶ手数に
+ * 見合わないため2026-11-07に2択をやめた。マグネットに入れた場合は保存後に編集で直す）。
+ * 編集では既存のギャラリー・バインダーのカードを扱うので、どちらも選べるようにする（同 §5-2）。
  */
 export function setMode(mode) {
   state.mode = mode;
@@ -158,6 +160,7 @@ export function setMode(mode) {
 
   els.tierField.hidden = isNew;
   els.tierNote.hidden = !isNew;
+  els.storageField.hidden = isNew;
   els.storageBinder.hidden = isNew;
   els.storageBinder.disabled = isNew;
 
@@ -383,8 +386,9 @@ export function fill(options) {
 
   // 新規登録は常に金庫。編集では台帳の値をそのまま出す
   els.tier.value = options.mode === 'edit' ? (values.tier ?? 'vault') : 'vault';
-  els.storageType.value = values.storageType ?? 'toploader';
-  els.storageName.value = values.storageName ?? '';
+  // 新規登録は常にトップローダー。編集では台帳の値をそのまま出す
+  els.storageType.value = options.mode === 'edit' ? (values.storageType ?? 'toploader') : 'toploader';
+  els.storageName.value = options.mode === 'edit' ? (values.storageName ?? '') : '';
   els.priceWatch.checked = Boolean(values.priceWatch);
   els.price.value = typeof values.price === 'number' ? String(values.price) : '';
   syncGbRef(values.gbRef ?? '');
@@ -529,8 +533,8 @@ export function read() {
         teamOnCard: els.team.value,
         // 新規登録では選ばせないので、フォームの値ではなく固定値を返す
         tier: state.mode === 'edit' ? els.tier.value : 'vault',
-        storageType: els.storageType.value,
-        storageName: els.storageName.value,
+        storageType: state.mode === 'edit' ? els.storageType.value : 'toploader',
+        storageName: state.mode === 'edit' ? els.storageName.value : '',
         priceWatch: els.priceWatch.checked,
         gbRef: els.gbRef.value,
         price,
