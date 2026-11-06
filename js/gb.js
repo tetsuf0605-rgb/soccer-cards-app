@@ -8,6 +8,7 @@
  */
 import { matchKey } from './text.js';
 import { resolveTeam, teamLabel } from './refdata.js';
+import { applicableVariations } from './checklist.js';
 
 /** spots[].type の語彙。 */
 const SPOT_TYPE_LABEL = { team: 'チーム', player: '選手', combo: '複合' };
@@ -85,6 +86,149 @@ export function spotTeams(index, spot) {
 export function cardsFromBreak(breakId, rows) {
   if (!breakId) return [];
   return (rows ?? []).filter((row) => row.card.gbRef === breakId);
+}
+
+/* ===== 狙い選手がどのスポットから出るか ===== */
+
+/** cards[].kind の表示名（出るカードの種類）。 */
+const KIND_LABEL = {
+  auto: 'オート', relic: 'レリック', insert: 'インサート', base: 'ベース', other: 'その他',
+};
+
+/** 価値の高いものから見たい順。GBの判断材料なのでオート・レリックを先に出す。 */
+const KIND_ORDER = ['auto', 'relic', 'insert', 'base', 'other'];
+
+export function cardKindLabel(kind) {
+  return KIND_LABEL[kind] ?? kind ?? '';
+}
+
+/**
+ * チェックリストの1行について、シリアル入りのパラレルを数える。
+ *
+ * 分母は「いちばん少ない値」だけ出しても意味がない（たいてい 1/1 が入っていて
+ * どの選手も同じになる）。いちばん多い値といちばん少ない値の幅で出す。
+ *
+ * @returns {{serial: number, total: number, min: number|null, max: number|null}}
+ */
+function countSerialParallels(checklist, row) {
+  const byName = new Map((checklist.variations ?? []).map((v) => [v.name, v]));
+  const names = applicableVariations(checklist, row);
+
+  let serial = 0;
+  let min = null;
+  let max = null;
+  for (const name of names) {
+    const denominator = byName.get(name)?.denominator;
+    if (typeof denominator !== 'number') continue;
+    serial += 1;
+    if (min === null || denominator < min) min = denominator;
+    if (max === null || denominator > max) max = denominator;
+  }
+  return { serial, total: names.length, min, max };
+}
+
+/**
+ * 狙い選手1人について、その製品でどんなカードが出るかをまとめる。
+ * 種類（オート / レリック / インサート / ベース）ごとに畳む。
+ */
+function summariseCards(checklist, cards) {
+  const byKind = new Map();
+  for (const row of cards) {
+    const kind = row.kind || 'other';
+    if (!byKind.has(kind)) byKind.set(kind, []);
+    byKind.get(kind).push(row);
+  }
+
+  return [...byKind.entries()]
+    .map(([kind, rows]) => {
+      let serial = 0;
+      let min = null;
+      let max = null;
+      for (const row of rows) {
+        const counted = countSerialParallels(checklist, row);
+        serial += counted.serial;
+        if (counted.min !== null && (min === null || counted.min < min)) min = counted.min;
+        if (counted.max !== null && (max === null || counted.max > max)) max = counted.max;
+      }
+      return { kind, cardNos: rows.map((row) => row.cardNo), count: rows.length, serial, min, max };
+    })
+    .sort((a, b) => KIND_ORDER.indexOf(a.kind) - KIND_ORDER.indexOf(b.kind));
+}
+
+/**
+ * 狙い選手（targets.json）が、このGBのどのスポットから出るかを出す。
+ *
+ * スポットの決め方は2段階:
+ *   1. `spots[].playersEn` に名前がある → そのスポット（名指し。いちばん確か）
+ *   2. 無ければ、その選手のカードに印字されたチーム（チェックリストの `cards[].team`）で引く。
+ *      現所属ではなく**カードのチーム**を見る — 同じ選手でも製品によって所属が違うため
+ *
+ * 1チームが複数スポットに分かれているブレイクでは、名指しが無いと
+ * どのスポットに入るか決められない。その場合は候補を全部返し `ambiguous` を立てる。
+ *
+ * @param {object} gb readGb の結果
+ * @param {object|null} checklist readChecklist の結果（無ければ出るカードは分からない）
+ * @param {Array<object>} targets readTargets の結果
+ * @param {object} index buildTeamIndex の結果
+ * @param {Array} [rows] buildRows の結果。チェックリストにカードが無い選手を
+ *   現所属で拾うための保険（チェックリスト未作成のGBでも名前が消えないように）
+ * @returns {Array<{target: object, spots: Array<object>, named: boolean,
+ *                  ambiguous: boolean, kinds: Array<object>}>}
+ */
+export function targetsInBreak(gb, checklist, targets, index, rows) {
+  if (!gb || !Array.isArray(targets) || targets.length === 0) return [];
+
+  const spotsByTeam = new Map();
+  for (const spot of gb.spots) {
+    for (const id of spot.teamIds) {
+      if (!spotsByTeam.has(id)) spotsByTeam.set(id, []);
+      spotsByTeam.get(id).push(spot);
+    }
+  }
+
+  const results = [];
+  for (const target of targets) {
+    const key = matchKey(target.nameEn);
+    if (!key) continue;
+
+    const cards = (checklist?.cards ?? []).filter((row) => matchKey(row.nameEn) === key);
+
+    const named = gb.spots.filter((spot) => spot.playersEn.some((p) => matchKey(p) === key));
+
+    // カードに印字されたチームからスポットを引く（名指しが無いとき用）
+    const teamIds = new Set();
+    for (const row of cards) {
+      const team = resolveTeam(index, row.team);
+      if (team) teamIds.add(team.id);
+    }
+    // チェックリストにこの選手のカードが無いときだけ、台帳の現所属で代用する。
+    // カードのチームのほうが確かなので、あくまで保険
+    if (teamIds.size === 0) {
+      const player = (rows ?? [])
+        .map((row) => row.player)
+        .find((p) => p && (p.id === target.playerId || matchKey(p.nameEn) === key));
+      const team = resolveTeam(index, player?.currentTeam);
+      if (team) teamIds.add(team.id);
+    }
+    const byTeam = [...teamIds].flatMap((id) => spotsByTeam.get(id) ?? []);
+
+    // 名指しを優先し、同じチームの他スポットは後ろに付ける
+    const spots = [...named];
+    for (const spot of byTeam) {
+      if (!spots.includes(spot)) spots.push(spot);
+    }
+    if (spots.length === 0) continue;
+
+    results.push({
+      target,
+      spots,
+      named: named.length > 0,
+      // 名指しが無く、同じチームに複数スポットがある＝どれに入るか決められない
+      ambiguous: named.length === 0 && spots.length > 1,
+      kinds: checklist ? summariseCards(checklist, cards) : [],
+    });
+  }
+  return results;
 }
 
 /**

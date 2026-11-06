@@ -21,8 +21,11 @@ import {
   readChecklist,
   statusLabel,
 } from './checklist.js';
-import { assignCardsToSpots, formatLabel, gbStatusLabel, readGb, spotTeams, spotTypeLabel } from './gb.js';
-import { teamLabel } from './refdata.js';
+import {
+  assignCardsToSpots, cardKindLabel, formatLabel, gbStatusLabel,
+  readGb, spotTeams, spotTypeLabel, targetsInBreak,
+} from './gb.js';
+import { readTargets, teamLabel } from './refdata.js';
 
 const TABS = [
   { id: 'checklists', label: '製品' },
@@ -61,6 +64,7 @@ function statusBadge(status) {
  * @param {{
  *   getRefs: () => object,
  *   getRows: () => Array,
+ *   getTargets: () => object|null,
  *   getTeamIndex: () => object,
  *   loadChecklist: (productKey: string) => Promise<object>,
  *   loadGb: (breakId: string) => Promise<object>,
@@ -77,6 +81,8 @@ export function createLibrary(deps) {
     checklist: null,
     /** 開いているGB（readGb の結果） */
     gb: null,
+    /** そのGBの製品のチェックリスト（狙い選手に何が出るかを出すため。無いこともある） */
+    gbChecklist: null,
     /** 所持照合の区分フィルタ。空なら全部出す */
     statuses: [],
     /** 展開している行の cardNo */
@@ -326,7 +332,7 @@ export function createLibrary(deps) {
 
   /* ===== GBビュー ===== */
 
-  function buildSpot(entry, index) {
+  function buildSpot(entry, index, targetHits) {
     const { spot, rows } = entry;
     const section = el('div', 'spot');
 
@@ -337,6 +343,17 @@ export function createLibrary(deps) {
     }
     section.append(head);
     section.append(el('p', 'spot__meta', [spotTypeLabel(spot.type), spot.spotId].filter(Boolean).join('・')));
+
+    // このスポットで狙い選手が出るなら、スポットを眺めているときに分かるようにする
+    const wanted = (targetHits ?? []).filter((hit) => hit.spots.includes(spot));
+    if (wanted.length > 0) {
+      const line = el('p', 'spot__targets');
+      line.append(el('span', 'badge badge--target', '狙い'));
+      line.append(el('span', null, wanted
+        .map((hit) => `${hit.target.name || hit.target.nameEn}${hit.ambiguous ? '（候補）' : ''}`)
+        .join(' / ')));
+      section.append(line);
+    }
 
     const teams = spotTeams(index, spot);
     if (teams.length > 0) {
@@ -368,6 +385,74 @@ export function createLibrary(deps) {
     return section;
   }
 
+  /** 出るカードの一行（「オート 1種（CA-LMA）・シリアルあり 58種 /250〜/1」）。 */
+  function kindLine(kind) {
+    const nos = kind.cardNos.slice(0, 3).join(', ') + (kind.cardNos.length > 3 ? ' ほか' : '');
+    let serial = 'シリアルなし';
+    if (kind.serial > 0) {
+      // 分母は幅で出す。どのラダーにも 1/1 があるので最少だけでは差が出ない
+      const range = kind.max === kind.min ? `/${kind.min}` : `/${kind.max}〜/${kind.min}`;
+      serial = `シリアルあり ${kind.serial}種 ${range}`;
+    }
+    return `${cardKindLabel(kind.kind)} ${kind.count}種（${nos}）・${serial}`;
+  }
+
+  /**
+   * 「狙い選手がどのスポットから出るか」（GBを買うときの判断材料）。
+   * チェックリストが無いと出るカードまでは分からないので、その旨を出す。
+   */
+  function buildTargets(hits) {
+    const section = el('div');
+    section.append(el('h3', 'section-title', '狙い選手'));
+
+    const targets = readTargets(deps.getTargets());
+    if (targets.length === 0) {
+      section.append(el('p', 'hint', '狙い選手が登録されていません（ヘッダーの「★」から追加できます）。'));
+      return section;
+    }
+    if (hits.length === 0) {
+      section.append(el('p', 'hint',
+        `登録済みの狙い選手${targets.length}人は、このGBのスポットには見当たりません。`));
+      return section;
+    }
+
+    const list = el('ul', 'targets');
+    for (const hit of hits) {
+      const li = el('li', 'target');
+      const body = el('div', 'target__body');
+      body.append(el('p', 'target__name', hit.target.name || hit.target.nameEn));
+      body.append(el('p', 'target__name-en', hit.target.nameEn));
+
+      for (const spot of hit.spots) {
+        const line = el('p', 'target__spot');
+        line.append(el('span', 'target__spot-name', spot.name));
+        if (typeof spot.priceYen === 'number') {
+          line.append(el('span', 'target__spot-price', `¥${spot.priceYen.toLocaleString('ja-JP')}`));
+        }
+        body.append(line);
+      }
+      if (hit.ambiguous) {
+        body.append(el('p', 'cl-row__warn',
+          'このチームは複数のスポットに分かれていて、名指しがないのでどれに入るかは分かりません。'));
+      }
+
+      if (hit.kinds.length > 0) {
+        const kinds = el('ul', 'target__kinds');
+        for (const kind of hit.kinds) kinds.append(el('li', null, kindLine(kind)));
+        body.append(kinds);
+      } else if (!state.gbChecklist) {
+        body.append(el('p', 'hint', 'チェックリストが無いので、出るカードは分かりません。'));
+      } else {
+        body.append(el('p', 'hint', 'この製品のチェックリストにこの選手のカードがありません。'));
+      }
+
+      li.append(body);
+      list.append(li);
+    }
+    section.append(list);
+    return section;
+  }
+
   function renderGb() {
     const gb = state.gb;
     const index = deps.getTeamIndex();
@@ -391,6 +476,9 @@ export function createLibrary(deps) {
     els.gbHead.replaceChildren(root);
 
     const { spots, cards, unassigned } = assignCardsToSpots(gb, index, deps.getRows());
+    const targetHits = targetsInBreak(
+      gb, state.gbChecklist, readTargets(deps.getTargets()), index, deps.getRows(),
+    );
 
     const body = el('div');
     const known = deps.getRefs().checklists?.some((entry) => entry.key === gb.productKey);
@@ -403,8 +491,10 @@ export function createLibrary(deps) {
       body.append(actions);
     }
 
+    body.append(buildTargets(targetHits));
+
     body.append(el('h3', 'section-title', `スポット（${spots.length}件）`));
-    for (const entry of spots) body.append(buildSpot(entry, index));
+    for (const entry of spots) body.append(buildSpot(entry, index, targetHits));
 
     if (unassigned.length > 0) {
       body.append(el('h3', 'section-title', `スポットに結び付かなかったカード（${unassigned.length}枚）`));
@@ -434,6 +524,19 @@ export function createLibrary(deps) {
     try {
       const json = await deps.loadGb(breakId);
       state.gb = readGb(json);
+
+      // 狙い選手に「何が出るか」を出すには、その製品のチェックリストが要る。
+      // 取れなくてもスポットは出せるので、失敗は握って進む
+      state.gbChecklist = null;
+      const known = deps.getRefs().checklists?.some((entry) => entry.key === state.gb.productKey);
+      if (known) {
+        try {
+          state.gbChecklist = readChecklist(await deps.loadChecklist(state.gb.productKey));
+        } catch {
+          state.gbChecklist = null;
+        }
+      }
+
       setMessage(els.message, '');
       renderGb();
       deps.showView('gb');

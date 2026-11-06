@@ -1051,3 +1051,51 @@ input[type="search"]:focus-visible {
   font-size: 13px;
   text-align: left;
 }
+
+/* ===== GBビューの狙い選手（どのスポットから何が出るか） ===== */
+
+.badge--target {
+  color: var(--accent-text);
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+.spot__targets {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px 8px;
+  margin: 8px 0 0;
+  font-size: 14px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.target__spot {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  margin: 6px 0 0;
+  font-size: 14px;
+}
+.target__spot-name { font-weight: 600; overflow-wrap: anywhere; }
+.target__spot-price { flex: none; font-variant-numeric: tabular-nums; }
+
+.target__kinds {
+  list-style: none;
+  margin: 8px 0 0;
+  padding: 0;
+  display: grid;
+  gap: 1px;
+  background: var(--border);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  overflow: hidden;
+}
+.target__kinds li {
+  padding: 7px 10px;
+  font-size: 13px;
+  background: var(--surface-2);
+  overflow-wrap: anywhere;
+}

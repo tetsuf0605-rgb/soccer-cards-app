@@ -64,7 +64,7 @@ import {
 } from '../js/checklist.js';
 import {
   readGb, spotTeams, cardsFromBreak, assignCardsToSpots,
-  formatLabel, gbStatusLabel, spotTypeLabel,
+  formatLabel, gbStatusLabel, spotTypeLabel, targetsInBreak, cardKindLabel,
 } from '../js/gb.js';
 import {
   buildTeamIndex, resolveTeam, teamLabel, teamFacets, searchTeamFacets, teamIdsForRow,
@@ -2048,6 +2048,136 @@ await test('参照データのパス', () => {
   assertEqual(checklistPath('2023-24-panini-prizm-premier-league'),
     'checklists/2023-24-panini-prizm-premier-league.json', 'チェックリスト');
   assertEqual(gbPath('BLZ_2026-09-05_Test'), 'gb/BLZ_2026-09-05_Test.json', 'GB');
+});
+
+/* ========== 狙い選手がGBのどのスポットから出るか（スキーマ仕様 §9-2・§9-4） ========== */
+
+/** パラレルの分母がはっきりしている小さな製品。 */
+const GB_CHECKLIST = readChecklist({
+  schemaVersion: 2,
+  productKey: '2025-26-test-product',
+  maker: 'Test', series: 'Product', season: '2025-26',
+  coverage: 'full', cardsCoverage: 'partial',
+  variations: [
+    { name: 'Base', category: 'base', denominator: 'none' },
+    { name: 'Gold', category: 'parallel', denominator: 50 },
+    { name: 'Red', category: 'parallel', denominator: 5 },
+    { name: 'Insert Only', category: 'insert', denominator: 25 },
+  ],
+  cards: [
+    { cardNo: 'A1', nameEn: 'Target One', team: 'Aston Villa', kind: 'auto', parallels: 'all', features: ['auto'] },
+    { cardNo: 'B1', nameEn: 'Target One', team: 'Aston Villa', kind: 'base', parallels: 'all', features: [] },
+    { cardNo: 'R1', nameEn: 'Target One', team: 'Aston Villa', kind: 'relic', parallels: ['Base', 'Insert Only'], features: ['patch'] },
+    { cardNo: 'A2', nameEn: 'Target Two', team: 'Borussia Dortmund', kind: 'auto', parallels: ['Base'], features: ['auto'] },
+  ],
+});
+
+const GB_TARGETS = [
+  { nameEn: 'Target One', name: '狙い1', playerId: null, note: '', addedAt: '2026-11-07' },
+  { nameEn: 'Target Two', name: '狙い2', playerId: null, note: '', addedAt: '2026-11-07' },
+  { nameEn: 'Nobody Here', name: '誰でもない', playerId: null, note: '', addedAt: '2026-11-07' },
+];
+
+const spot = (spotId, name, teamIds, playersEn, priceYen) =>
+  ({ spotId, name, type: 'team', priceYen, teamIds, playersEn });
+
+await test('GB: 狙い選手が名指しされているスポットを出す', () => {
+  const gb = readGb({
+    breakId: 'b', spots: [
+      spot('A1', 'Villa - Stars', ['aston-villa'], ['Target One'], 9000),
+      spot('A2', 'Villa - Others', ['aston-villa'], [], 3000),
+      spot('D', 'Dortmund', ['borussia-dortmund'], [], 4000),
+    ],
+  });
+  const hits = targetsInBreak(gb, GB_CHECKLIST, GB_TARGETS, TEAM_INDEX);
+
+  assertEqual(hits.length, 2, '該当する狙い選手の数');
+  const one = hits.find((h) => h.target.nameEn === 'Target One');
+  assertEqual(one.named, true, '名指し');
+  assertEqual(one.ambiguous, false, '名指しがあれば曖昧でない');
+  // 名指しのスポットが先頭。同じチームの他スポットも後ろに付く
+  assertEqual(one.spots.map((s) => s.name).join(' / '), 'Villa - Stars / Villa - Others', 'スポットの順');
+
+  const two = hits.find((h) => h.target.nameEn === 'Target Two');
+  assertEqual(two.named, false, '名指しなし');
+  assertEqual(two.spots.map((s) => s.name).join(), 'Dortmund', 'カードのチームで引く');
+  assertEqual(two.ambiguous, false, '1チーム1スポットなら曖昧でない');
+});
+
+await test('GB: 1チームが複数スポットで名指しが無ければ「候補」として出す', () => {
+  const gb = readGb({
+    breakId: 'b', spots: [
+      spot('A1', 'Villa - Stars', ['aston-villa'], ['Someone Else'], 9000),
+      spot('A2', 'Villa - Others', ['aston-villa'], [], 3000),
+    ],
+  });
+  const one = targetsInBreak(gb, GB_CHECKLIST, GB_TARGETS, TEAM_INDEX)
+    .find((h) => h.target.nameEn === 'Target One');
+
+  assertEqual(one.named, false, '名指しなし');
+  assertEqual(one.ambiguous, true, 'どのスポットに入るか決められない');
+  assertEqual(one.spots.length, 2, '候補は両方出す');
+});
+
+await test('GB: 出るカードを種類ごとに畳み、分母は幅で出す', () => {
+  const gb = readGb({ breakId: 'b', spots: [spot('A', 'Aston Villa', ['aston-villa'], ['Target One'], 5000)] });
+  const one = targetsInBreak(gb, GB_CHECKLIST, GB_TARGETS, TEAM_INDEX)[0];
+
+  // 価値の高いものから（オート → レリック → インサート → ベース）
+  assertEqual(one.kinds.map((k) => k.kind).join(), 'auto,relic,base', '種類の並び');
+
+  const auto = one.kinds.find((k) => k.kind === 'auto');
+  assertEqual(auto.count, 1, 'オートの枚数');
+  assertEqual(auto.cardNos.join(), 'A1', 'カード番号');
+  // parallels "all" は category base/parallel のみ。Insert Only は入らない
+  assertEqual(auto.serial, 2, 'シリアルありのパラレル数');
+  assertEqual(auto.max, 50, 'いちばん多い分母');
+  assertEqual(auto.min, 5, 'いちばん少ない分母');
+
+  // 明示列挙の行は、その中のシリアルありだけを数える
+  const relic = one.kinds.find((k) => k.kind === 'relic');
+  assertEqual(relic.serial, 1, 'Insert Only の1種だけ');
+  assertEqual(relic.max, 25, '分母');
+  assertEqual(relic.min, 25, '1種なので幅は無い');
+
+  assertEqual(cardKindLabel('auto'), 'オート', '種類の表示名');
+  assertEqual(cardKindLabel('relic'), 'レリック', '種類の表示名');
+});
+
+await test('GB: チェックリストが無くても名指しなら出す（カードは分からない）', () => {
+  const gb = readGb({ breakId: 'b', spots: [spot('A', 'Aston Villa', ['aston-villa'], ['Target One'], 5000)] });
+  const hits = targetsInBreak(gb, null, GB_TARGETS, TEAM_INDEX);
+
+  assertEqual(hits.length, 1, '名指しのぶんだけ出る');
+  assertEqual(hits[0].named, true, '名指し');
+  assertEqual(hits[0].kinds.length, 0, '出るカードは分からない');
+});
+
+await test('GB: チェックリストに無い選手は台帳の現所属で拾う', () => {
+  const gb = readGb({ breakId: 'b', spots: [spot('D', 'Dortmund', ['borussia-dortmund'], [], 4000)] });
+  // チェックリストに載っていない狙い選手
+  const targets = [{ nameEn: 'Jude Bellingham', name: 'ジュード・ベリンガム', playerId: 'p-0001' }];
+
+  assertEqual(targetsInBreak(gb, GB_CHECKLIST, targets, TEAM_INDEX).length, 0, '台帳が無ければ拾えない');
+
+  // players_info の currentTeam は Real Madrid なので、collection 側の値で引く
+  const base = parse('collection.json');
+  const atDortmund = {
+    ...base,
+    players: base.players.map((p) => (p.id === 'p-0001' ? { ...p, currentTeam: 'Borussia Dortmund' } : p)),
+  };
+  const rows = buildRows(mergeCollection(atDortmund, null, null).merged);
+  const hits = targetsInBreak(gb, GB_CHECKLIST, targets, TEAM_INDEX, rows);
+
+  assertEqual(hits.length, 1, '現所属で拾える');
+  assertEqual(hits[0].spots.map((s) => s.name).join(), 'Dortmund', 'スポット');
+  assertEqual(hits[0].kinds.length, 0, 'チェックリストに無いので出るカードは分からない');
+});
+
+await test('GB: 狙い選手が空なら何も出ない', () => {
+  const gb = readGb({ breakId: 'b', spots: [spot('A', 'Aston Villa', ['aston-villa'], ['Target One'], 5000)] });
+  assertEqual(targetsInBreak(gb, GB_CHECKLIST, [], TEAM_INDEX).length, 0, '空の狙い選手');
+  assertEqual(targetsInBreak(null, GB_CHECKLIST, GB_TARGETS, TEAM_INDEX).length, 0, 'GBが無い');
 });
 
 /* ========== 実データを実際に描画して目視確認 ========== */

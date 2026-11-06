@@ -520,6 +520,8 @@ function currentTargets() {
 async function commitTargets(apply) {
   const result = await commitTargetsFile(settings, currentTargets(), apply);
   state.refs.targets = { json: result.json, sha: result.sha };
+  // GBビューの「狙い選手」も狙いの増減に合わせて出し直す
+  library.refresh();
   return result;
 }
 
@@ -570,6 +572,7 @@ const library = createLibrary({
   getRefs: () => state.refs,
   getRows: () => state.rows,
   getTeamIndex: () => state.teamIndex,
+  getTargets: () => state.refs.targets?.json ?? null,
   loadChecklist: (productKey) => loadRefFile('checklist', productKey, checklistPath(productKey)),
   loadGb: (breakId) => loadRefFile('gb', breakId, gbPath(breakId)),
   showView,
