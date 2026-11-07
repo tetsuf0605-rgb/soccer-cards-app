@@ -458,8 +458,8 @@ export function createLibrary(deps) {
   /**
    * ここに出なかった狙い選手について、「出ない」と言い切れるかを書く。
    *
-   * 判定の根拠はスポットの名指しとチェックリストの cards[] だけ（現所属は使わない。
-   * 古い製品では所属が当時と違い、players_info の currentTeam 自体が誤っている例もある）。
+   * 判定の根拠はスポットの名指しとチェックリストの cards[] だけ
+   * （現所属は使わない。古い製品では所属が当時と違う）。
    * cards[] が未完成なら「出ない」とは言えないので、そう書く。
    */
   function targetsCaveat(targets, hits) {

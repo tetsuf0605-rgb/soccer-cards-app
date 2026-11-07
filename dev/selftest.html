@@ -2155,8 +2155,8 @@ await test('GB: チェックリストが無くても名指しなら出す（カ�
 
 await test('GB: チェックリストに無い選手を現所属で拾ってはいけない', () => {
   // 現所属が合っているように見えても、その製品にカードが無ければ出ない。
-  // 古い製品では所属が当時と違い、players_info の currentTeam 自体が誤っている例もある
-  // （実例: Zion Suzuki の currentTeam が Aston Villa になっていた）
+  // 現所属が正しくても、その製品の所属とは別（実例: 鈴木彩艶の現所属は Aston Villa だが、
+  // 2024-25 Merlin 当時は Parma なので、その製品には1枚も無い）
   const gb = readGb({ breakId: 'b', spots: [spot('V', 'Aston Villa', ['aston-villa'], [], 4000)] });
   const targets = [{ nameEn: 'Jude Bellingham', name: 'ジュード・ベリンガム', playerId: 'p-0001' }];
 
