@@ -413,6 +413,7 @@ export function createLibrary(deps) {
     if (hits.length === 0) {
       section.append(el('p', 'hint',
         `登録済みの狙い選手${targets.length}人は、このGBのスポットには見当たりません。`));
+      section.append(targetsCaveat(targets, hits));
       return section;
     }
 
@@ -450,7 +451,36 @@ export function createLibrary(deps) {
       list.append(li);
     }
     section.append(list);
+    section.append(targetsCaveat(targets, hits));
     return section;
+  }
+
+  /**
+   * ここに出なかった狙い選手について、「出ない」と言い切れるかを書く。
+   *
+   * 判定の根拠はスポットの名指しとチェックリストの cards[] だけ（現所属は使わない。
+   * 古い製品では所属が当時と違い、players_info の currentTeam 自体が誤っている例もある）。
+   * cards[] が未完成なら「出ない」とは言えないので、そう書く。
+   */
+  function targetsCaveat(targets, hits) {
+    const rest = targets.length - hits.length;
+    if (rest <= 0) return el('span', null, '');
+
+    // 1人も出ていないときは直前の行が人数を言っているので、ここでは繰り返さない
+    const who = hits.length === 0 ? '' : `残りの狙い選手${rest}人`;
+
+    const checklist = state.gbChecklist;
+    if (!checklist) {
+      return el('p', 'hint',
+        `この製品のチェックリストが無いので、${who ? `${who}は` : ''}`
+        + 'スポットの名指しだけで見ています（名指しが無ければ判定できません）。');
+    }
+    if (checklist.cardsCoverage !== 'full') {
+      return el('p', 'hint',
+        `チェックリストのカード一覧が未完成（${checklist.cardsCoverage}）なので、`
+        + `${who ? `${who}が` : ''}出ないとは言い切れません。`);
+    }
+    return el('p', 'hint', `${who || '狙い選手'}のカードは、この製品にはありません。`);
   }
 
   function renderGb() {
@@ -477,7 +507,7 @@ export function createLibrary(deps) {
 
     const { spots, cards, unassigned } = assignCardsToSpots(gb, index, deps.getRows());
     const targetHits = targetsInBreak(
-      gb, state.gbChecklist, readTargets(deps.getTargets()), index, deps.getRows(),
+      gb, state.gbChecklist, readTargets(deps.getTargets()), index,
     );
 
     const body = el('div');

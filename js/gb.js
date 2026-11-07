@@ -158,24 +158,27 @@ function summariseCards(checklist, cards) {
 /**
  * 狙い選手（targets.json）が、このGBのどのスポットから出るかを出す。
  *
- * スポットの決め方は2段階:
+ * スポットの決め方は2段階。どちらも**この製品にその選手のカードがある**証拠が要る:
  *   1. `spots[].playersEn` に名前がある → そのスポット（名指し。いちばん確か）
  *   2. 無ければ、その選手のカードに印字されたチーム（チェックリストの `cards[].team`）で引く。
  *      現所属ではなく**カードのチーム**を見る — 同じ選手でも製品によって所属が違うため
+ *
+ * 台帳・players_info の現所属は使わない。古い製品では所属が当時と違うし、
+ * players_info の currentTeam 自体が誤っていることもある（実例: Zion Suzuki が
+ * Aston Villa になっており、2024-25 Merlin の Aston Villa スポットから
+ * 出るように見えてしまった）。証拠が無いなら出さない。
  *
  * 1チームが複数スポットに分かれているブレイクでは、名指しが無いと
  * どのスポットに入るか決められない。その場合は候補を全部返し `ambiguous` を立てる。
  *
  * @param {object} gb readGb の結果
- * @param {object|null} checklist readChecklist の結果（無ければ出るカードは分からない）
+ * @param {object|null} checklist readChecklist の結果（無ければ名指しだけが頼り）
  * @param {Array<object>} targets readTargets の結果
  * @param {object} index buildTeamIndex の結果
- * @param {Array} [rows] buildRows の結果。チェックリストにカードが無い選手を
- *   現所属で拾うための保険（チェックリスト未作成のGBでも名前が消えないように）
  * @returns {Array<{target: object, spots: Array<object>, named: boolean,
  *                  ambiguous: boolean, kinds: Array<object>}>}
  */
-export function targetsInBreak(gb, checklist, targets, index, rows) {
+export function targetsInBreak(gb, checklist, targets, index) {
   if (!gb || !Array.isArray(targets) || targets.length === 0) return [];
 
   const spotsByTeam = new Map();
@@ -199,15 +202,6 @@ export function targetsInBreak(gb, checklist, targets, index, rows) {
     const teamIds = new Set();
     for (const row of cards) {
       const team = resolveTeam(index, row.team);
-      if (team) teamIds.add(team.id);
-    }
-    // チェックリストにこの選手のカードが無いときだけ、台帳の現所属で代用する。
-    // カードのチームのほうが確かなので、あくまで保険
-    if (teamIds.size === 0) {
-      const player = (rows ?? [])
-        .map((row) => row.player)
-        .find((p) => p && (p.id === target.playerId || matchKey(p.nameEn) === key));
-      const team = resolveTeam(index, player?.currentTeam);
       if (team) teamIds.add(team.id);
     }
     const byTeam = [...teamIds].flatMap((id) => spotsByTeam.get(id) ?? []);

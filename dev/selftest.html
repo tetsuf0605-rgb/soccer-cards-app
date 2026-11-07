@@ -2153,25 +2153,33 @@ await test('GB: チェックリストが無くても名指しなら出す（カ�
   assertEqual(hits[0].kinds.length, 0, '出るカードは分からない');
 });
 
-await test('GB: チェックリストに無い選手は台帳の現所属で拾う', () => {
-  const gb = readGb({ breakId: 'b', spots: [spot('D', 'Dortmund', ['borussia-dortmund'], [], 4000)] });
-  // チェックリストに載っていない狙い選手
+await test('GB: チェックリストに無い選手を現所属で拾ってはいけない', () => {
+  // 現所属が合っているように見えても、その製品にカードが無ければ出ない。
+  // 古い製品では所属が当時と違い、players_info の currentTeam 自体が誤っている例もある
+  // （実例: Zion Suzuki の currentTeam が Aston Villa になっていた）
+  const gb = readGb({ breakId: 'b', spots: [spot('V', 'Aston Villa', ['aston-villa'], [], 4000)] });
   const targets = [{ nameEn: 'Jude Bellingham', name: 'ジュード・ベリンガム', playerId: 'p-0001' }];
 
-  assertEqual(targetsInBreak(gb, GB_CHECKLIST, targets, TEAM_INDEX).length, 0, '台帳が無ければ拾えない');
-
-  // players_info の currentTeam は Real Madrid なので、collection 側の値で引く
   const base = parse('collection.json');
-  const atDortmund = {
+  const atVilla = {
     ...base,
-    players: base.players.map((p) => (p.id === 'p-0001' ? { ...p, currentTeam: 'Borussia Dortmund' } : p)),
+    players: base.players.map((p) => (p.id === 'p-0001' ? { ...p, currentTeam: 'Aston Villa' } : p)),
   };
-  const rows = buildRows(mergeCollection(atDortmund, null, null).merged);
-  const hits = targetsInBreak(gb, GB_CHECKLIST, targets, TEAM_INDEX, rows);
+  const rows = buildRows(mergeCollection(atVilla, null, null).merged);
 
-  assertEqual(hits.length, 1, '現所属で拾える');
-  assertEqual(hits[0].spots.map((s) => s.name).join(), 'Dortmund', 'スポット');
-  assertEqual(hits[0].kinds.length, 0, 'チェックリストに無いので出るカードは分からない');
+  assertEqual(targetsInBreak(gb, GB_CHECKLIST, targets, TEAM_INDEX).length, 0, '現所属では拾わない');
+  // 以前は rows を渡すと拾ってしまっていた。余分な引数は無視される
+  assertEqual(targetsInBreak(gb, GB_CHECKLIST, targets, TEAM_INDEX, rows).length, 0, 'rows を渡しても拾わない');
+
+  // チェックリストに Aston Villa のカードがあれば、そのときだけ出る
+  const withCard = readChecklist({
+    schemaVersion: 2, productKey: 'x', coverage: 'full', cardsCoverage: 'full',
+    variations: [{ name: 'Base', category: 'base', denominator: 'none' }],
+    cards: [{ cardNo: '1', nameEn: 'Jude Bellingham', team: 'Aston Villa', kind: 'base', parallels: 'all', features: [] }],
+  });
+  const hits = targetsInBreak(gb, withCard, targets, TEAM_INDEX);
+  assertEqual(hits.length, 1, 'カードがあれば出る');
+  assertEqual(hits[0].spots.map((s) => s.name).join(), 'Aston Villa', 'スポット');
 });
 
 await test('GB: 狙い選手が空なら何も出ない', () => {
