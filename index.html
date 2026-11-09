@@ -114,7 +114,10 @@
       <input id="tg-search" type="search" placeholder="選手名で絞り込み"
              autocapitalize="none" autocorrect="off" spellcheck="false" autocomplete="off">
       <div id="tg-candidates" class="choices"></div>
-      <p class="hint">まだ1枚も持っていない選手は、下の2つを手で入力してください。</p>
+      <p class="hint">
+        すでに持っている選手は、一覧でそのカードを開いて「狙いに追加」を押すのが早いです。
+        まだ1枚も持っていない選手は、下の2つを手で入力してください。
+      </p>
     </div>
     <div class="field">
       <label for="tg-nameen">カード表記（nameEn）</label>
@@ -177,6 +180,7 @@
     <div class="actions">
       <button type="button" id="btn-edit" class="btn btn--primary">編集する</button>
       <button type="button" id="btn-watch" class="btn">価格ウォッチ</button>
+      <button type="button" id="btn-detail-target" class="btn">狙いに追加</button>
     </div>
     <div class="actions">
       <button type="button" id="btn-delete" class="btn btn--danger">倉庫へ移動（登録解除）</button>
@@ -440,8 +444,9 @@
     <p class="hint">
       一覧は collection.json に prices.json / players_info.json を
       重ねた（オーバーレイ優先）結果です。取り込みは右上の「＋」から、
-      編集・価格ウォッチ切替・「倉庫へ移動（登録解除）」は各カードの詳細から。
-      書き込むのは collection.json だけで、1操作ごとに1コミットします。
+      編集・価格ウォッチ切替・狙い選手の出し入れ・「倉庫へ移動（登録解除）」は
+      各カードの詳細から。書き込むのは collection.json と targets.json だけで、
+      1操作ごとに1コミットします。
     </p>
     <p class="hint">
       最後に読み込めた内容はこの端末に保存され、オフラインでも閲覧・エクスポートできます。

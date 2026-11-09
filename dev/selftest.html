@@ -68,7 +68,8 @@ import {
 } from '../js/gb.js';
 import {
   buildTeamIndex, resolveTeam, teamLabel, teamFacets, searchTeamFacets, teamIdsForRow,
-  readTargets, addTarget, removeTarget, describeTargets, formatCareerEntry, TEAM_MODES,
+  readTargets, addTarget, removeTarget, describeTargets, targetableFromRow,
+  formatCareerEntry, TEAM_MODES,
 } from '../js/refdata.js';
 import { stringifyCollection, stringifyTargets } from '../js/serialize.js';
 import {
@@ -1579,6 +1580,32 @@ await test('狙い選手: 追加・重複・削除', () => {
   assertEqual(removeTarget(json, 'Nobody', NOW_STAMP), null, '無い選手の削除はnull');
   assertEqual(readTargets(null).length, 0, '未作成は空配列');
   assertEqual(readTargets({ targets: [{ name: 'nameEnが無い' }] }).length, 0, 'nameEn必須');
+});
+
+await test('狙い選手: 所持カードの行から登録する中身を作る', () => {
+  const rows = SEARCH_ROWS();
+  const row = rows.find((r) => r.player?.id === 'p-0001');
+
+  const made = targetableFromRow(row);
+  assertEqual(made.nameEn, row.player.nameEn, 'nameEn はカード表記のまま');
+  assertEqual(made.name, row.player.name, 'カナ');
+  assertEqual(made.playerId, 'p-0001', '台帳の選手と紐づける');
+
+  // そのまま addTarget に渡せる（★画面と同じ経路）
+  const json = addTarget(null, { ...made, note: '' }, NOW_DATE, NOW_STAMP);
+  assertEqual(readTargets(json).length, 1, '登録できる');
+  // 同じ選手の別のカードから押しても重複しない（照合キーは nameEn）
+  assertEqual(addTarget(json, { ...made, note: '' }, NOW_DATE, NOW_STAMP), null, '2枚目からは重複');
+
+  // カナが無ければ nameEn を名前に使う（空の name で登録しない）
+  assertEqual(targetableFromRow({ player: { nameEn: 'Zion Suzuki', name: '  ', id: null } }).name,
+    'Zion Suzuki', 'カナなしは nameEn で代用');
+  assertEqual(targetableFromRow({ player: { nameEn: 'Zion Suzuki' } }).playerId, null, 'idが無ければnull');
+
+  // 登録できない行はボタンを隠すので null
+  assertEqual(targetableFromRow({ player: null }), null, '選手データなし');
+  assertEqual(targetableFromRow({ player: { nameEn: '   ', name: 'カナだけ' } }), null, 'nameEnが空');
+  assertEqual(targetableFromRow(null), null, '行そのものが無い');
 });
 
 await test('狙い選手: 台帳と突き合わせて所持状況を出す', () => {

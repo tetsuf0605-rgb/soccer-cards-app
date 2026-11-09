@@ -9,7 +9,7 @@
  * 最終取得の内容は js/cache.js が localStorage に持つ。
  */
 
-const CACHE_NAME = 'soccer-cards-shell-v5';
+const CACHE_NAME = 'soccer-cards-shell-v6';
 
 /**
  * インストール時に取っておくアプリ殻。

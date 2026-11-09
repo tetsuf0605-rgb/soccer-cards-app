@@ -192,6 +192,27 @@ export function addTarget(targetsJson, entry, addedAt, updatedAt) {
 }
 
 /**
+ * 所持カードの行から、狙い選手として登録する中身を作る。
+ *
+ * 照合キーは `nameEn`（スキーマ仕様 §9-2）なので、選手データが無い行や
+ * nameEn が空の行は登録できない。そのときは null を返す（画面はボタンを隠す）。
+ * カナが無ければ nameEn をそのまま名前に使う（空の name で登録しない）。
+ *
+ * @param {{player?: object|null}|null} row buildRows の1行
+ * @returns {{nameEn: string, name: string, playerId: string|null}|null}
+ */
+export function targetableFromRow(row) {
+  const nameEn = (row?.player?.nameEn ?? '').trim();
+  if (!nameEn) return null;
+  const player = row.player;
+  return {
+    nameEn,
+    name: (player.name ?? '').trim() || nameEn,
+    playerId: player.id ?? null,
+  };
+}
+
+/**
  * 狙い選手を1件外した新しい targets.json を返す（無ければ null）。
  * @returns {object|null}
  */

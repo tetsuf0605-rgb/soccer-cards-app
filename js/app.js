@@ -17,7 +17,10 @@ import {
   buildRows, filterRows, applyChips, sortRows, findSortOption, effectivePrice,
   defaultFilters, SORT_OPTIONS, DEFAULT_SORT_ID,
 } from './query.js';
-import { buildTeamIndex } from './refdata.js';
+import {
+  buildTeamIndex, readTargets, addTarget, removeTarget, targetableFromRow,
+} from './refdata.js';
+import { matchKey } from './text.js';
 import { readChecklist } from './checklist.js';
 import { el, setMessage, buildCardList, buildDetail, buildFileStat, buildDirStat } from './render.js';
 import { createIngestForm } from './ingestform.js';
@@ -29,7 +32,7 @@ import { createChecklistForm } from './checklistform.js';
 import { setGbOptions } from './cardform.js';
 import { applyTeamTheme } from './theme.js';
 import { askConfirm, closeConfirm } from './confirm.js';
-import { removeCard, replaceCard } from './ingest.js';
+import { removeCard, replaceCard, toIsoDate, toIsoTimestamp } from './ingest.js';
 import { loadSnapshot, saveSnapshot, clearSnapshot } from './cache.js';
 import { buildExport, canShareFile, shareFile, downloadFile } from './export.js';
 
@@ -65,6 +68,7 @@ const els = {
   settingsConfirm: document.getElementById('settings-confirm'),
   edit: document.getElementById('btn-edit'),
   watch: document.getElementById('btn-watch'),
+  detailTarget: document.getElementById('btn-detail-target'),
   delete: document.getElementById('btn-delete'),
   back: document.getElementById('btn-back'),
   form: document.getElementById('settings-form'),
@@ -367,6 +371,7 @@ function updateWriteAvailability() {
   els.importToggle.disabled = !allowed;
   els.edit.disabled = !allowed;
   els.watch.disabled = !allowed;
+  els.detailTarget.disabled = !allowed;
   els.delete.disabled = !allowed;
   // 狙い選手は開いたままオフラインになることがあるので、その場で押せなくする
   if (!els.viewTargets.hidden) targetsView.refresh();
@@ -424,6 +429,7 @@ function openDetail(cardId, note) {
   closeConfirm(els.detailConfirm);
   els.detailBody.replaceChildren(buildDetail(row, state.sources, state.teamIndex));
   els.watch.textContent = row.card.priceWatch ? '価格ウォッチを外す' : '価格ウォッチに入れる';
+  syncDetailTarget(row);
   setMessage(els.detailMessage, note ?? '', note ? 'ok' : undefined);
   showView('detail');
 }
@@ -436,6 +442,7 @@ function setDetailBusy(busy) {
   }
   els.edit.disabled = true;
   els.watch.disabled = true;
+  els.detailTarget.disabled = true;
   els.delete.disabled = true;
 }
 
@@ -651,6 +658,78 @@ async function runDetailAction(apply, note) {
   }
 }
 
+/* ===== 所持カードから狙い選手に入れる（スキーマ仕様 §9-2） ===== */
+
+/** いま狙い選手に入っている同じ選手（nameEn の照合キーで引く）。 */
+function targetEntryFor(nameEn) {
+  const key = matchKey(nameEn);
+  return readTargets(currentTargets().json).find((entry) => matchKey(entry.nameEn) === key) ?? null;
+}
+
+/** 詳細のボタンを、いまの狙い選手の中身に合わせる。 */
+function syncDetailTarget(row) {
+  const targetable = targetableFromRow(row);
+  els.detailTarget.hidden = !targetable;
+  if (!targetable) return;
+
+  const already = targetEntryFor(targetable.nameEn);
+  els.detailTarget.textContent = already ? '狙いから外す' : '狙いに追加';
+  els.detailTarget.classList.toggle('btn--danger', Boolean(already));
+}
+
+/**
+ * 詳細に出している選手を狙い選手に入れる・外す。
+ *
+ * ★画面と同じ `addTarget` / `removeTarget` を使う。メモは空で入れる
+ * （付けたいときは★画面で足す）。外すときだけ確認を出す。
+ */
+async function toggleDetailTarget() {
+  if (!detailCardId || !writesAllowed()) return;
+  const row = state.rows.find((candidate) => candidate.card.id === detailCardId);
+  const targetable = targetableFromRow(row);
+  if (!targetable) return;
+
+  const already = targetEntryFor(targetable.nameEn);
+  if (already) {
+    const confirmed = await askConfirm(els.detailConfirm, {
+      text: `「${targetable.name}」を狙い選手から外しますか？`,
+      yesLabel: '外す',
+      danger: true,
+    });
+    if (!confirmed) return;
+  }
+
+  const now = new Date();
+  setDetailBusy(true);
+  setMessage(els.detailMessage, '保存中…');
+  try {
+    const { retried } = await commitTargets((json) => {
+      const next = already
+        ? removeTarget(json, targetable.nameEn, toIsoTimestamp(now))
+        : addTarget(json, { ...targetable, note: '' }, toIsoDate(now), toIsoTimestamp(now));
+      // 他の端末が先に入れた・外したとき（§9-2 の照合キーは nameEn）
+      if (!next) {
+        throw new Error(already
+          ? `${targetable.nameEn} は狙い選手にありません。再読込してやり直してください。`
+          : `${targetable.nameEn} はすでに狙い選手に入っています。`);
+      }
+      return {
+        json: next,
+        message: `iphone: targets ${already ? 'remove' : 'add'} ${targetable.nameEn}`,
+        result: { nameEn: targetable.nameEn },
+      };
+    });
+    const suffix = retried ? '｜競合したため取り直して保存しました' : '';
+    openDetail(detailCardId, already
+      ? `${targetable.name} を狙いから外しました${suffix}`
+      : `${targetable.name} を狙いに追加しました${suffix}`);
+  } catch (error) {
+    setMessage(els.detailMessage, error.message, 'error');
+  } finally {
+    setDetailBusy(false);
+  }
+}
+
 async function toggleWatch() {
   if (!detailCardId || !requireLoaded('価格ウォッチの切替')) return;
   const cardId = detailCardId;
@@ -804,6 +883,7 @@ els.back.addEventListener('click', () => {
 
 els.edit.addEventListener('click', openEdit);
 els.watch.addEventListener('click', toggleWatch);
+els.detailTarget.addEventListener('click', toggleDetailTarget);
 els.delete.addEventListener('click', deleteCard);
 
 els.cardList.addEventListener('click', (event) => {
