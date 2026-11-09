@@ -159,7 +159,8 @@ function summariseCards(checklist, cards) {
  * 狙い選手（targets.json）が、このGBのどのスポットから出るかを出す。
  *
  * スポットの決め方は2段階。どちらも**この製品にその選手のカードがある**証拠が要る:
- *   1. `spots[].playersEn` に名前がある → そのスポット（名指し。いちばん確か）
+ *   1. `spots[].playersEn` に名前がある → **そのスポットだけ**（名指し。いちばん確か。
+ *      同じチームの他スポットは出さない — ブレイカーの割り当てが正）
  *   2. 無ければ、その選手のカードに印字されたチーム（チェックリストの `cards[].team`）で引く。
  *      現所属ではなく**カードのチーム**を見る — 同じ選手でも製品によって所属が違うため
  *
@@ -206,11 +207,10 @@ export function targetsInBreak(gb, checklist, targets, index) {
     }
     const byTeam = [...teamIds].flatMap((id) => spotsByTeam.get(id) ?? []);
 
-    // 名指しを優先し、同じチームの他スポットは後ろに付ける
-    const spots = [...named];
-    for (const spot of byTeam) {
-      if (!spots.includes(spot)) spots.push(spot);
-    }
+    // 名指しがあれば、その選手はそのスポットに割り当てられている。同じチームの
+    // 他スポットは出さない（Stadium Club は PSG が4スポットに分かれており、
+    // 全部出すとどこで出るのか分からなくなる）。ブレイカーの割り当てが正
+    const spots = named.length > 0 ? named : byTeam;
     if (spots.length === 0) continue;
 
     results.push({

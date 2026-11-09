@@ -2122,8 +2122,8 @@ await test('GB: 狙い選手が名指しされているスポットを出す', (
   const one = hits.find((h) => h.target.nameEn === 'Target One');
   assertEqual(one.named, true, '名指し');
   assertEqual(one.ambiguous, false, '名指しがあれば曖昧でない');
-  // 名指しのスポットが先頭。同じチームの他スポットも後ろに付く
-  assertEqual(one.spots.map((s) => s.name).join(' / '), 'Villa - Stars / Villa - Others', 'スポットの順');
+  // 名指しがあれば、そのスポットだけ。同じチームの他スポットは出さない
+  assertEqual(one.spots.map((s) => s.name).join(' / '), 'Villa - Stars', '名指しのスポットだけ');
 
   const two = hits.find((h) => h.target.nameEn === 'Target Two');
   assertEqual(two.named, false, '名指しなし');
